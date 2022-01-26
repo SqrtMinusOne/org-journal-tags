@@ -64,7 +64,10 @@ The only argument is the tag string."
   'org-journal-tags-tag-face)
 
 (cl-defstruct (org-journal-tag (:constructor org-journal-tag--create))
-  name references)
+  name dates)
+
+(cl-defstruct (org-journal-tag-reference (:constructor org-journal-tag-reference--create))
+  ref-start ref-end time date)
 
 (defun org-journal-tags-db--empty ()
   "Create an empty org-journal-tags database."
@@ -110,12 +113,51 @@ The only argument is the tag string."
  :follow #'org-journal-tags--follow
  :face (lambda (&rest args) (funcall org-journal-tags-face-function args)))
 
+(defun org-journal-tags--ensure-decrypted ()
+  "Ensure that the current org-journal is decrypted."
+  (when org-journal-enable-encryption
+    (goto-char (point-min))
+    (while (search-forward ":crypt:" nil t)
+      (org-decrypt-entry))))
+
 (defun org-journal-tags--extract-links ()
-  "Extract org-journal links from the current org buffer."
+  "Extract tags from the current org-journal buffer.
+
+Returns an alist of the format (tag-name . reference), where reference is `org-journal-tag-reference'.  Tag names in the alist can repeat."
+  (org-journal-tags--ensure-decrypted)
   (org-element-map (org-element-parse-buffer) 'link
     (lambda (link)
       (when (string= (org-element-property :type link) "org-journal")
-        link))))
+        (let ((tag (org-element-property :path link))
+              (parent (org-element-property :parent link))
+              (elem (org-element-property :parent link))
+              (date-re (org-journal--format->regex
+                        org-journal-created-property-timestamp-format))
+              time
+              date)
+          (cl-loop while elem do (setq elem (org-element-property :parent elem))
+                   when (and (eq (org-element-type elem) 'headline)
+                             (= (org-element-property :level elem) 2))
+                   do (setq time (org-element-property :raw-value elem))
+                   when (and (eq (org-element-type elem) 'headline)
+                             (= (org-element-property :level elem) 1))
+                   do (let ((created (org-element-property :CREATED elem)))
+                        (string-match date-re created)
+                        (setq date
+                              (time-convert
+                               (encode-time
+                                0 0 0
+                                (string-to-number (match-string 3 created)) ; day
+                                (string-to-number (match-string 2 created)) ; month
+                                (string-to-number (match-string 1 created))) ; year
+                               'integer))))
+          (cons
+           tag
+           (org-journal-tag-reference--create
+            :ref-start (line-number-at-pos (org-element-property :begin parent))
+            :ref-end (line-number-at-pos (org-element-property :end parent))
+            :time time
+            :date date)))))))
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
