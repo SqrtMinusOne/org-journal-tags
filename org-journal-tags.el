@@ -64,14 +64,16 @@ The only argument is the tag string."
   'org-journal-tags-tag-face)
 
 (cl-defstruct (org-journal-tag (:constructor org-journal-tag--create))
-  name dates)
+  name
+  (dates (make-hash-table)))
 
 (cl-defstruct (org-journal-tag-reference (:constructor org-journal-tag-reference--create))
   ref-start ref-end time date)
 
 (defun org-journal-tags-db--empty ()
   "Create an empty org-journal-tags database."
-  (make-hash-table :test #'equal))
+  `((:tags . ,(make-hash-table :test #'equal))
+    (:files . ,(make-hash-table :test #'equal))))
 
 (defun org-journal-tags-db-load ()
   "Load the org-journal-tags database from the filesystem."
@@ -108,17 +110,28 @@ The only argument is the tag string."
   "TODO. Eventually this fill do something."
   (message (prin1-to-string rest)))
 
+(defun org-journal-tags--complete (&optional arg)
+  "Create an org-journal-tags link using completion."
+  (let ((name (completing-read
+               "Tag: "
+               (cl-loop for k being the hash-keys of
+                        (alist-get :tags org-journal-tags-db)
+                        collect k))))
+    (format "org-journal:%s" name)))
+
 (org-link-set-parameters
  "org-journal"
  :follow #'org-journal-tags--follow
+ :complete #'org-journal-tags--complete
  :face (lambda (&rest args) (funcall org-journal-tags-face-function args)))
 
 (defun org-journal-tags--ensure-decrypted ()
   "Ensure that the current org-journal is decrypted."
   (when org-journal-enable-encryption
-    (goto-char (point-min))
-    (while (search-forward ":crypt:" nil t)
-      (org-decrypt-entry))))
+    (save-excursion
+      (goto-char (point-min))
+      (while (search-forward ":crypt:" nil t)
+        (org-decrypt-entry)))))
 
 (defun org-journal-tags--extract-links ()
   "Extract tags from the current org-journal buffer.
@@ -158,6 +171,81 @@ Returns an alist of the format (tag-name . reference), where reference is `org-j
             :ref-end (line-number-at-pos (org-element-property :end parent))
             :time time
             :date date)))))))
+
+(defun org-journal-tags--clear-date (date)
+  "Remove all references to DATE from the database."
+  (maphash
+   (lambda (tag-name tag)
+     (remhash date (org-journal-tag-dates tag)))
+   (alist-get :tags org-journal-tags-db)))
+
+(defun org-journal-tags--clear-empty-tags ()
+  "Remove tags with no references from the database."
+  (let ((keys (cl-loop for tag-name being the hash-keys of
+                       (alist-get :tags org-journal-tags-db)
+                       using (hash-values tag)
+                       when (= 0 (hash-table-count (org-journal-tag-dates tag)))
+                       collect tag-name)))
+    (cl-loop for key in keys do
+             (remhash key (alist-get :tags org-journal-tags-db)))))
+
+(defun org-journal-tags--store-links (references)
+  "Store tag references in the org-journal-tags database.
+
+REFERENCES is a list, where one element is a cons cell
+of (tag-name . `org-journal-tag-reference')"
+  (thread-last
+    references
+    (mapcar (lambda (ref) (org-journal-tag-reference-date (cdr ref))))
+    seq-uniq
+    (mapcar #'org-journal-tags--clear-date))
+  (cl-loop for ref-elem in references
+           for tag-name = (car ref-elem)
+           for ref = (cdr ref-elem)
+           with tags-hash = (alist-get :tags org-journal-tags-db)
+           unless (gethash tag-name tags-hash)
+           do (puthash tag-name (org-journal-tag--create :name tag-name)
+                       tags-hash)
+           for tag = (gethash tag-name tags-hash)
+           do (let ((dates-hash (org-journal-tag-dates tag))
+                    (date (org-journal-tag-reference-date ref)))
+                (puthash date
+                         (or (if-let ((date-ref-list (gethash date dates-hash)))
+                                 (push ref date-ref-list)
+                               (list ref)))
+                         dates-hash)))
+  (org-journal-tags--clear-empty-tags))
+
+(defun org-journal-tags--record-file-processed ()
+  "Save the last modification timestamp to the database."
+  (puthash
+   (buffer-file-name)
+   (time-convert
+    (nth 5 (file-attributes (buffer-file-name)))
+    'integer)
+   (alist-get :files org-journal-tags-db)))
+
+(defun org-journal-tags-process-buffer ()
+  "Update the org-journal-tags with the current buffer."
+  (interactive)
+  (org-journal-tags-db-ensure)
+  (org-journal-tags--store-links
+   (org-journal-tags--extract-links)))
+
+(defun org-journal-tags--setup ()
+  "Setup the current org-journal buffer for tags database autoupdate."
+  ;; DEPTH is 0 because this has to be before the auto encrypt hook
+  (add-hook 'before-save-hook #'org-journal-tags--process-buffer 0 t)
+  (add-hook 'after-save-hook #'org-journal-tags--record-file-processed nil t))
+
+;;;###autoload
+(define-minor-mode org-journal-tags-autosync-mode
+  "Automatically update the org-journal-tags database."
+  :global t
+  (if org-journal-tags-autosync-mode
+      (progn
+        (add-hook 'org-journal-mode-hook #'org-journal-tags--setup))
+    (remove-hook 'org-journal-mode-hook #'org-journal-tags--setup)))
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
