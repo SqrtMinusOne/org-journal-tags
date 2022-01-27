@@ -232,20 +232,78 @@ of (tag-name . `org-journal-tag-reference')"
   (org-journal-tags--store-links
    (org-journal-tags--extract-links)))
 
-(defun org-journal-tags--setup ()
-  "Setup the current org-journal buffer for tags database autoupdate."
-  ;; DEPTH is 0 because this has to be before the auto encrypt hook
-  (add-hook 'before-save-hook #'org-journal-tags--process-buffer 0 t)
-  (add-hook 'after-save-hook #'org-journal-tags--record-file-processed nil t))
+(defun org-journal-tags--cleanup-missing-files ()
+  "Remove references to the deleted org journal files."
+  ;; First remove missing files
+  (let ((files-hash (copy-hash-table (alist-get :files org-journal-tags-db))))
+    (cl-loop for file in (org-journal--list-files)
+             do (remhash file files-hash))
+    (when (< 0 (hash-table-size files-hash))
+      (cl-loop for removed-file being the hash-keys of files-hash
+               do (remhash removed-file (alist-get :files org-journal-tags-db)))
+      ;; If a file is removed, it is also necessary to filter the
+      ;; removed dates from the DB
+      (let ((dates-hash (make-hash-table)))
+        (cl-loop for tag being the hash-values of
+                 (alist-get :tags org-journal-tags-db)
+                 do (cl-loop for date being the hash-keys of
+                             (org-journal-tag-dates tag)
+                             do (puthash date nil dates-hash)))
+        (cl-loop for date-journal in (org-journal--list-dates)
+                 for date = (time-convert
+                             (encode-time
+                              0 0 0
+                              (nth 1 date-journal)
+                              (nth 0 date-journal)
+                              (nth 2 date-journal))
+                             'integer)
+                 do (remhash date dates-hash))
+        (cl-loop for tag being the hash-values of
+                 (alist-get :tags org-journal-tags-db)
+                 do (cl-loop for removed-date being the hash-keys of
+                             dates-hash
+                             do (remhash removed-date (org-journal-tag-dates tag))))))))
+
+(defun org-journal-tags--sync-updated-files ()
+  "Update the database with new or updated org-journal files."
+  (cl-loop for file in (org-journal--list-files)
+           for last-updated = (time-convert
+                               (nth 5 (file-attributes file))
+                               'integer)
+           when (let ((date
+                       (gethash file (alist-get :files org-journal-tags-db))))
+                  (or (null date) (> last-updated date)))
+           do (with-temp-buffer
+                (message "Syncronizing org-journal-tags database...")
+                (insert-file-contents file)
+                (setq-local buffer-file-name file)
+                (org-mode)
+                (org-journal-tags-process-buffer)
+                (org-journal-tags--record-file-processed)
+                (set-buffer-modified-p nil))))
+
+(defun org-journal-tags-sync-db ()
+  "Update the org-journal-tags database with all journal files."
+  (interactive)
+  (org-journal-tags-db-ensure)
+  (org-journal-tags--cleanup-missing-files)
+  (org-journal-tags--clear-empty-tags)
+  (org-journal-tags--sync-updated-files))
 
 ;;;###autoload
 (define-minor-mode org-journal-tags-autosync-mode
-  "Automatically update the org-journal-tags database."
-  :global t
+  "Automatically update the org-journal-tags database.
+
+Hook this to `org-journal-mode-hook' like this:
+(add-hook 'org-journal-mode-hook
+          #'org-journal-tags-autosync-mode)"
+  :init-value nil
   (if org-journal-tags-autosync-mode
       (progn
-        (add-hook 'org-journal-mode-hook #'org-journal-tags--setup))
-    (remove-hook 'org-journal-mode-hook #'org-journal-tags--setup)))
+        (add-hook 'before-save-hook #'org-journal-tags-process-buffer -100 t)
+        (add-hook 'after-save-hook #'org-journal-tags--record-file-processed nil t))
+    (remove-hook 'before-save-hook #'org-journal-tags-process-buffer t)
+    (remove-hook 'after-save-hook #'org-journal-tags--record-file-processed t)))
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
