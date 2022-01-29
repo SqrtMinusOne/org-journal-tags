@@ -5,7 +5,7 @@
 ;; Author: Korytov Pavel <thexcloud@gmail.com>
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2"))
+;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0"))
 ;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags.el
 
 ;; This file is NOT part of GNU Emacs.
@@ -28,9 +28,10 @@
 ;; TODO
 
 ;;; Code:
+(require 'cl-lib)
+(require 'magit-section)
 (require 'org-journal)
 (require 'org-macs)
-(require 'cl-lib)
 
 (defgroup org-journal-tags ()
   "Manage tags for org-journal"
@@ -65,6 +66,11 @@ The database is stored in the file, path to which is set by
 (defface org-journal-tags-tag-face
   '((t (:inherit warning)))
   "A default face for org-journal tags."
+  :group 'org-journal-tags)
+
+(defface org-journal-tags-info-face
+  '((t (:inherit success)))
+  "A face to higlight various information."
   :group 'org-journal-tags)
 
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
@@ -102,6 +108,10 @@ The only argument is the tag string."
 (defun org-journal-tags-db-ensure ()
   "Ensure that the database has been loaded."
   (when (null org-journal-tags-db) (org-journal-tags-db-load)))
+
+(defun org-journal-tags-db-reset ()
+  (interactive)
+  (setf org-journal-tags-db (org-journal-tags-db--empty)))
 
 (defun org-journal-tags-db-save ()
   "Save the org-journal-tags database to the filesystem."
@@ -267,6 +277,16 @@ called interactively."
   (when process-file
     (org-journal-tags--record-file-processed)))
 
+(defun org-journal-tags--parse-journal-date (date-journal)
+  "Parse a date from the format used in org-journal.
+
+DATE-JOURNAL is a list of (month day year)."
+  (encode-time
+   0 0 0
+   (nth 1 date-journal)
+   (nth 0 date-journal)
+   (nth 2 date-journal)))
+
 (defun org-journal-tags--cleanup-missing-files ()
   "Remove references to the deleted org journal files."
   ;; First remove missing files
@@ -286,11 +306,7 @@ called interactively."
                              do (puthash date nil dates-hash)))
         (cl-loop for date-journal in (org-journal--list-dates)
                  for date = (time-convert
-                             (encode-time
-                              0 0 0
-                              (nth 1 date-journal)
-                              (nth 0 date-journal)
-                              (nth 2 date-journal))
+                             (org-journal-tags--parse-journal-date date-journal)
                              'integer)
                  do (remhash date dates-hash))
         (cl-loop for tag being the hash-values of
@@ -351,6 +367,62 @@ If you don't want to turn this on, you can manually call:
         (add-hook 'kill-emacs-hook #'org-journal-tags-db-save-safe))
     (remove-hook 'org-journal-mode-hook #'org-journal-tags--setup-buffer)
     (remove-hook 'kill-emacs-hook #'org-journal-tags-db-save-safe)))
+
+(defvar org-journal-tags-status-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map magit-section-mode-map)
+    (when (fboundp #'evil-define-key*)
+      (evil-define-key* 'normal map
+        (kbd "<tab>") #'magit-section-toggle
+        "q" #'kill-buffer-and-window))
+    map)
+  "A keymap for `org-journal-tags-status-mode'.")
+
+(define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
+  "TODO")
+
+(defun org-journal-tags--buffer-render-info ()
+  (let ((dates (org-journal--list-dates)))
+    (insert (format "Date:          %s\n"
+                    (propertize (format-time-string "%Y-%m-%d")
+                                'face 'org-journal-tags-info-face)))
+    (insert (format "Last record:   %s\n"
+                    (propertize (thread-last
+                                  (last dates)
+                                  car
+                                  org-journal-tags--parse-journal-date
+                                  (format-time-string "%Y-%m-%d"))
+                                'face 'org-journal-tags-info-face)))
+    (insert (format "Total tags:    %s\n"
+                    (propertize (thread-first
+                                  (alist-get :tags org-journal-tags-db)
+                                  hash-table-count
+                                  number-to-string)
+                                'face 'org-journal-tags-info-face)))
+    (insert (format "Total dates:   %s\n"
+                    (propertize (number-to-string (length dates))
+                                'face 'org-journal-tags-info-face)))))
+
+(defun org-journal-tags--buffer-render-contents ()
+  "Render the contents of the org-journal-tags status buffer."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (org-journal-tags-status-mode)
+    (magit-insert-section (org-journal-tags)
+      (magit-insert-heading)
+      (org-journal-tags--buffer-render-info))))
+
+;;;###autoload
+(defun org-journal-tags-status ()
+  "TODO"
+  (interactive)
+  (org-journal-tags-db-ensure)
+  (when-let ((buffer (get-buffer "*org-journal-tags*")))
+    (kill-buffer buffer))
+  (let ((buffer (get-buffer-create "*org-journal-tags*")))
+    (with-current-buffer buffer
+      (org-journal-tags--buffer-render-contents))
+    (switch-to-buffer-other-window buffer)))
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
