@@ -45,7 +45,22 @@
   :type 'file)
 
 (defvar org-journal-tags-db nil
-  "The core org-journal-tags database.")
+  "The core org-journal-tags database.
+
+The database is an alist with two keys: :tags and :files.
+
+:tags is a hash-map with tag names as keys and instances of
+`org-journal-tag' as values.
+
+:files is also a hash-map with org-journal files as keys and
+timestamps of their last update as values.  This is used to keep
+track of updates in the filesystem, for instance when journal
+files are created on some other machine.
+
+The database is stored in the file, path to which is set by
+`org-journal-tags-db-file', loaded from filesystem with
+`org-journal-tags-db-load' and saved with
+`org-journal-tags-db-save'.")
 
 (defface org-journal-tags-tag-face
   '((t (:inherit warning)))
@@ -89,6 +104,8 @@ The only argument is the tag string."
   (when (null org-journal-tags-db) (org-journal-tags-db-load)))
 
 (defun org-journal-tags-db-save ()
+  "Save the org-journal-tags database to the filesystem."
+  (interactive)
   (org-journal-tags-db-ensure)
   (mkdir (file-name-directory org-journal-tags-db-file) t)
   (let ((coding-system-for-write 'utf-8))
@@ -98,7 +115,16 @@ The only argument is the tag string."
             (print-length nil)
             (print-circle nil))
         (princ ";;; Org Journal Tags Database\n\n")
-        (prin1 org-journal-tags-db)))))
+        (prin1 org-journal-tags-db))))
+  :success)
+
+(defun org-journal-tags-db-save-safe ()
+  "Save the org-journal-tags database, ignoring errors.
+
+This can be put to `kill-emacs-hook' and not screw up anything
+with exceptions."
+  (ignore-errors
+    (org-journal-tags-db-save)))
 
 (defun org-journal-tags-db-unload ()
   "Unload the org-journal-tags database"
@@ -136,7 +162,9 @@ The only argument is the tag string."
 (defun org-journal-tags--extract-links ()
   "Extract tags from the current org-journal buffer.
 
-Returns an alist of the format (tag-name . reference), where reference is `org-journal-tag-reference'.  Tag names in the alist can repeat."
+Returns an alist of the format (tag-name . reference), where
+reference is `org-journal-tag-reference'.  Tag names in the alist
+can repeat."
   (org-journal-tags--ensure-decrypted)
   (org-element-map (org-element-parse-buffer) 'link
     (lambda (link)
@@ -225,12 +253,19 @@ of (tag-name . `org-journal-tag-reference')"
     'integer)
    (alist-get :files org-journal-tags-db)))
 
-(defun org-journal-tags-process-buffer ()
-  "Update the org-journal-tags with the current buffer."
-  (interactive)
+(defun org-journal-tags-process-buffer (&optional process-file)
+  "Update the org-journal-tags with the current buffer.
+
+By default it only updates the :tags part of
+`org-journal-tags-db'.  If PROCESS-FILE is non-nil, it also
+updates the :file part.  The latter happens if the function is
+called interactively."
+  (interactive "p")
   (org-journal-tags-db-ensure)
   (org-journal-tags--store-links
-   (org-journal-tags--extract-links)))
+   (org-journal-tags--extract-links))
+  (when process-file
+    (org-journal-tags--record-file-processed)))
 
 (defun org-journal-tags--cleanup-missing-files ()
   "Remove references to the deleted org journal files."
@@ -290,20 +325,32 @@ of (tag-name . `org-journal-tag-reference')"
   (org-journal-tags--clear-empty-tags)
   (org-journal-tags--sync-updated-files))
 
+(defun org-journal-tags--setup-buffer ()
+  "Setup the update of `org-journal-tags-db' after buffer save."
+  (add-hook 'before-save-hook #'org-journal-tags-process-buffer -100 t)
+  (add-hook 'after-save-hook #'org-journal-tags--record-file-processed nil t))
+
 ;;;###autoload
 (define-minor-mode org-journal-tags-autosync-mode
   "Automatically update the org-journal-tags database.
 
-Hook this to `org-journal-mode-hook' like this:
-(add-hook 'org-journal-mode-hook
-          #'org-journal-tags-autosync-mode)"
-  :init-value nil
+This does two things:
+- sets up individual org journal buffers to update to database after
+  save.
+- sets up saving the database on exit from Emacs.
+
+If you don't want to turn this on, you can manually call:
+- `org-journal-tags-process-buffer' to process the current org-journal
+  buffer
+- `org-journal-tags-sync-db' to sync the filesystem
+- `org-journal-tags-db-save' to save the database"
+  :global t
   (if org-journal-tags-autosync-mode
       (progn
-        (add-hook 'before-save-hook #'org-journal-tags-process-buffer -100 t)
-        (add-hook 'after-save-hook #'org-journal-tags--record-file-processed nil t))
-    (remove-hook 'before-save-hook #'org-journal-tags-process-buffer t)
-    (remove-hook 'after-save-hook #'org-journal-tags--record-file-processed t)))
+        (add-hook 'org-journal-mode-hook #'org-journal-tags--setup-buffer)
+        (add-hook 'kill-emacs-hook #'org-journal-tags-db-save-safe))
+    (remove-hook 'org-journal-mode-hook #'org-journal-tags--setup-buffer)
+    (remove-hook 'kill-emacs-hook #'org-journal-tags-db-save-safe)))
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
