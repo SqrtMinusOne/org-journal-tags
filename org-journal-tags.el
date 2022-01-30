@@ -142,9 +142,9 @@ with exceptions."
   (org-journal-tags-db-save)
   (setf org-journal-tags-db nil))
 
-(defun org-journal-tags--follow (&rest rest)
+(defun org-journal-tags--follow (tag prefix)
   "TODO. Eventually this fill do something."
-  (message (prin1-to-string rest)))
+  (message (org-journal-tags--links-get-tag tag)))
 
 (defun org-journal-tags--complete (&optional arg)
   "Create an org-journal-tags link using completion."
@@ -169,18 +169,59 @@ with exceptions."
       (while (search-forward ":crypt:" nil t)
         (org-decrypt-entry)))))
 
-(defun org-journal-tags--extract-links ()
-  "Extract tags from the current org-journal buffer.
+(defun org-journal-tags--links-get-tag (link)
+  "Get the tag name from LINK.
 
-Returns an alist of the format (tag-name . reference), where
-reference is `org-journal-tag-reference'.  Tag names in the alist
-can repeat."
-  (org-journal-tags--ensure-decrypted)
+LINK is either Org element or string."
+  (replace-regexp-in-string
+   (rx "::" (* nonl) eos)
+   ""
+   (or (org-element-property :path link) link)))
+
+(defun org-journal-tags--get-element-parent (elem type)
+  "Get the first parent of ELEM of the type TYPE."
+  (cl-loop while elem do (setq elem (org-element-property :parent elem))
+           if (eq (org-element-type elem) type)
+           return elem))
+
+(defun org-journal-tags--links-inline-get-region (link)
+  "Get region boundaries referenced by LINK.
+
+LINK should be an Org element with tree context set, e.g. returned
+from `org-element-parse-buffer'."
+  (let ((elems (split-string (org-element-property :path link) "::"))
+        (paragraph (org-journal-tags--get-element-parent link 'paragraph)))
+    (if (= (length elems) 1)
+        (list (org-element-property :begin paragraph)
+              (org-element-property :end paragraph))
+      (let ((next-siblings (string-to-number (nth 1 elems)))
+            (container (org-element-property :parent paragraph))
+            (begin (org-element-property :begin paragraph))
+            i end)
+        (cl-loop for elem in (org-element-contents container)
+                 if (eq elem paragraph) do (setq i 0)
+                 if i do (progn
+                           (setq end (org-element-property :end elem))
+                           (cl-incf i))
+                 if (and i (>= i next-siblings)) return nil)
+        (unless end
+          (setq end (org-element-property :end paragraph)))
+        (list begin end)))))
+
+(defun org-journal-tags--links-extract-inline ()
+  "Extract inline links from the current org-journal buffer.
+
+Inline links are ones that are just placed in the section.  Available formats:
+- [[org-journal:<link-name>]]
+- [[org-journal:<link-name>::<ref-number>]]
+In the first case, only the current paragraph is referenced.  In the
+second case, it's the current paragraph and ref-number of next
+paragraphs."
   (org-element-map (org-element-parse-buffer) 'link
     (lambda (link)
       (when (string= (org-element-property :type link) "org-journal")
-        (let ((tag (org-element-property :path link))
-              (parent (org-element-property :parent link))
+        (let ((tag (org-journal-tags--links-get-tag link))
+              (region (org-journal-tags--links-inline-get-region link))
               (elem (org-element-property :parent link))
               (date-re (org-journal--format->regex
                         org-journal-created-property-timestamp-format))
@@ -193,22 +234,84 @@ can repeat."
                    when (and (eq (org-element-type elem) 'headline)
                              (= (org-element-property :level elem) 1))
                    do (let ((created (org-element-property :CREATED elem)))
-                        (string-match date-re created)
                         (setq date
-                              (time-convert
-                               (encode-time
-                                0 0 0
-                                (string-to-number (match-string 3 created)) ; day
-                                (string-to-number (match-string 2 created)) ; month
-                                (string-to-number (match-string 1 created))) ; year
-                               'integer))))
+                              (org-journal-tags--parse-journal-created
+                               created date-re))))
           (cons
            tag
            (org-journal-tag-reference--create
-            :ref-start (line-number-at-pos (org-element-property :begin parent))
-            :ref-end (line-number-at-pos (org-element-property :end parent))
+            :ref-start (nth 0 region)
+            :ref-end (nth 1 region)
             :time time
             :date date)))))))
+
+(defun org-journal-tags--links-parse-link-str (str)
+  "Extract the tag name from a text representation of org link.
+
+STR should be a string of one of the following formats:
+- [[org-journal:<tag-name>]]
+- [[org-journal:<tag-name>][<tag-desc>]]
+
+<tag-name> or nil will be returned."
+  (when (string-match
+         (rx bos "[[org-journal:" (group (* (not "]"))) "]"
+             (? (* nonl)) "]" eos)
+         str)
+    (match-string 1 str)))
+
+(defun org-journal-tags--parse-journal-created (created &optional date-re)
+  "Parse a date from the :CREATED: property of org-journal."
+  (unless date-re
+    (setq date-re (org-journal--format->regex
+                   org-journal-created-property-timestamp-format)))
+  (string-match date-re created)
+  (time-convert
+   (encode-time
+    0 0 0
+    (string-to-number (match-string 3 created))  ; day
+    (string-to-number (match-string 2 created))  ; month
+    (string-to-number (match-string 1 created))) ; year
+   'integer))
+
+(defun org-journal-tags--links-extract-section ()
+  "Extract section-wide links.
+
+These links can be placed in the :TAGS: property of the section
+and reference the entire section."
+  (let (result
+        (date-re (org-journal--format->regex
+                  org-journal-created-property-timestamp-format)))
+    (org-element-map (org-element-parse-buffer) 'headline
+      (lambda (elem)
+        (when-let ((tags-prop (org-element-property :TAGS elem))
+                   (_ (= (org-element-property :level elem) 2))
+                   (created
+                    (when-let (created (org-element-property
+                                        :CREATED
+                                        (org-element-property :parent elem)))
+                      (org-journal-tags--parse-journal-created created date-re))))
+          (cl-loop for link in (split-string tags-prop)
+                   do (when-let ((tag (org-journal-tags--links-parse-link-str link)))
+                        (push (cons
+                               tag
+                               (org-journal-tag-reference--create
+                                :ref-start (org-element-property :contents-begin elem)
+                                :ref-end (org-element-property :contents-end elem)
+                                :time (org-element-property :raw-value elem)
+                                :date created))
+                              result))))))
+    result))
+
+(defun org-journal-tags--links-extract ()
+  "Extract tags from the current org-journal buffer.
+
+Returns an alist of the format (tag-name . reference), where
+reference is `org-journal-tag-reference'.  Tag names in the alist
+can repeat."
+  (org-journal-tags--ensure-decrypted)
+  (append
+   (org-journal-tags--links-extract-inline)
+   (org-journal-tags--links-extract-section)))
 
 (defun org-journal-tags--clear-date (date)
   "Remove all references to DATE from the database."
@@ -227,7 +330,7 @@ can repeat."
     (cl-loop for key in keys do
              (remhash key (alist-get :tags org-journal-tags-db)))))
 
-(defun org-journal-tags--store-links (references)
+(defun org-journal-tags--links-store (references)
   "Store tag references in the org-journal-tags database.
 
 REFERENCES is a list, where one element is a cons cell
@@ -272,8 +375,8 @@ updates the :file part.  The latter happens if the function is
 called interactively."
   (interactive "p")
   (org-journal-tags-db-ensure)
-  (org-journal-tags--store-links
-   (org-journal-tags--extract-links))
+  (org-journal-tags--links-store
+   (org-journal-tags--links-extract))
   (when process-file
     (org-journal-tags--record-file-processed)))
 
