@@ -29,6 +29,8 @@
 
 ;;; Code:
 (require 'cl-lib)
+(require 'seq)
+(require 'crm)
 (require 'magit-section)
 (require 'org-journal)
 (require 'org-macs)
@@ -41,7 +43,7 @@
   (if (boundp 'no-littering-var-directory)
       (concat no-littering-var-directory "org-journal-tags/index")
     (concat user-emacs-directory "org-journal-tags/index"))
-  "A location of the org-journal-tags database."
+  "Location of the org-journal-tags database."
   :group 'org-journal-tags
   :type 'file)
 
@@ -50,10 +52,10 @@
 
 The database is an alist with two keys: :tags and :files.
 
-:tags is a hash-map with tag names as keys and instances of
+`:tags' is a hash-map with tag names as keys and instances of
 `org-journal-tag' as values.
 
-:files is also a hash-map with org-journal files as keys and
+`:files' is also a hash-map with org-journal files as keys and
 timestamps of their last update as values.  This is used to keep
 track of updates in the filesystem, for instance when journal
 files are created on some other machine.
@@ -65,7 +67,7 @@ The database is stored in the file, path to which is set by
 
 (defface org-journal-tags-tag-face
   '((t (:inherit warning)))
-  "A default face for org-journal tags."
+  "Default face for org-journal tags."
   :group 'org-journal-tags)
 
 (defface org-journal-tags-info-face
@@ -76,19 +78,62 @@ The database is stored in the file, path to which is set by
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
   "A function to get the face of a tag.
 
-The only argument is the tag string."
+The only argument is the tag string.  The default one just returs
+`org-journal-tags-tag-face'."
   :group 'org-journal-tags
   :type 'function)
 
+(defcustom org-journal-tags-default-tag-prop "Tags"
+  "Default :TAGS: property name for `org-journal-tags-set-prop'.
+
+For now, this can only be variations of the word \"tags\" in
+different cases."
+  :group 'org-journal-tags
+  :type 'string)
+
+(defcustom org-journal-tags-format-new-tag-function
+  #'org-journal-tags--format-new-tag-default
+  "A function to format a newly inserted org journal tag.
+
+Used by `org-journal-tags-insert-tag' and
+`org-journal-tags-set-prop'."
+  :type 'function
+  :group 'org-journal-tags)
+
+(defun org-journal-tags--format-new-tag-default (tag)
+  "Default formatting function for new org journal tags.
+
+TAG is a string with the tag name."
+  (format "[[org-journal:%s][#%s]]" tag tag))
+
 (defun org-journal-tags--face-default (tag)
-  "A function to return the default tag face for TAG."
+  "A function to return the default tag face.
+
+TAG is a string with the tag name."
   'org-journal-tags-tag-face)
 
+
+;; Data model and database
+
 (cl-defstruct (org-journal-tag (:constructor org-journal-tag--create))
+  "A structure that holds one org journal tag.
+
+The properties are:
+- `:name': Tag name.
+- `:dates': Hash map with timestamps as keys and lists of
+  `org-journal-tag-reference' as values."
   name
   (dates (make-hash-table)))
 
 (cl-defstruct (org-journal-tag-reference (:constructor org-journal-tag-reference--create))
+  "A structure that holds one reference to an org journal tag.
+
+The properties are:
+- `:ref-start': Start of the referenced region
+- `:ref-end': End of the referenced region
+- `:time': A string that holds the time of the referneced record.
+  Doesn't have to be in any particular format.
+- `:date': A timestamp with the date of the referenced record."
   ref-start ref-end time date)
 
 (defun org-journal-tags-db--empty ()
@@ -110,6 +155,7 @@ The only argument is the tag string."
   (when (null org-journal-tags-db) (org-journal-tags-db-load)))
 
 (defun org-journal-tags-db-reset ()
+  "Reset the org-journal-tags database."
   (interactive)
   (setf org-journal-tags-db (org-journal-tags-db--empty)))
 
@@ -136,11 +182,15 @@ with exceptions."
   (ignore-errors
     (org-journal-tags-db-save)))
 
+
 (defun org-journal-tags-db-unload ()
   "Unload the org-journal-tags database"
   (interactive)
   (org-journal-tags-db-save)
   (setf org-journal-tags-db nil))
+
+
+;; Org link
 
 (defun org-journal-tags--follow (tag prefix)
   "TODO. Eventually this fill do something."
@@ -148,6 +198,7 @@ with exceptions."
 
 (defun org-journal-tags--complete (&optional arg)
   "Create an org-journal-tags link using completion."
+  (org-journal-tags-db-ensure)
   (let ((name (completing-read
                "Tag: "
                (cl-loop for k being the hash-keys of
@@ -160,6 +211,9 @@ with exceptions."
  :follow #'org-journal-tags--follow
  :complete #'org-journal-tags--complete
  :face (lambda (&rest args) (funcall org-journal-tags-face-function args)))
+
+
+;; Tags extraction and persistence
 
 (defun org-journal-tags--ensure-decrypted ()
   "Ensure that the current org-journal is decrypted."
@@ -313,6 +367,7 @@ can repeat."
    (org-journal-tags--links-extract-inline)
    (org-journal-tags--links-extract-section)))
 
+
 (defun org-journal-tags--clear-date (date)
   "Remove all references to DATE from the database."
   (maphash
@@ -443,6 +498,77 @@ DATE-JOURNAL is a list of (month day year)."
   (org-journal-tags--cleanup-missing-files)
   (org-journal-tags--clear-empty-tags)
   (org-journal-tags--sync-updated-files))
+
+
+;; Manage tags in the current buffer
+
+(defun org-journal-tags-set-prop ()
+  "Set up the \"tags\" property of the current org-journal section."
+  (interactive)
+  (org-journal-tags-db-ensure)
+  (save-excursion
+    (outline-back-to-heading)
+    (let ((elem (org-element-at-point)))
+      (unless (= 2 (org-element-property :level elem))
+        (user-error "Can't find a level 2 heading!"))
+      (let* ((all-tags (cl-loop for tag being the hash-keys of
+                                (alist-get :tags org-journal-tags-db)
+                                collect tag))
+             (tags (thread-last
+                     (or (org-element-property :TAGS elem)
+                         "")
+                     split-string
+                     (mapcar #'org-journal-tags--links-parse-link-str)
+                     (seq-filter (lambda (t) t))))
+             (add-tags (seq-difference all-tags tags))
+             (options (append
+                       (mapcar (lambda (tag) (format "+%s" tag)) add-tags)
+                       (mapcar (lambda (tag) (format "-%s" tag)) tags)))
+             (crm-separator " ")
+             ;; By default, space is bound to "complete word" function.
+             ;; Re-bind it to insert a space instead.  Note that <tab>
+             ;; still does the completion.
+             (crm-local-completion-map
+              (let ((map (make-sparse-keymap)))
+                (set-keymap-parent map crm-local-completion-map)
+                (define-key map " " 'self-insert-command)
+                map))
+             (changes (completing-read-multiple "Tags: " options))
+             (add-tags-res (thread-last
+                             changes
+                             (seq-filter (lambda (s)
+                                           (string-match-p (rx bos "+") s)))
+                             (mapcar (lambda (s) (substring s 1)))))
+             (remove-tags-res (thread-last
+                                changes
+                                (seq-filter (lambda (s)
+                                              (string-match-p (rx bos "-") s)))
+                                (mapcar (lambda (s) (substring s 1)))))
+             (result-tags (thread-last
+                            tags
+                            (seq-filter (lambda (s) (not (seq-contains
+                                                          remove-tags-res
+                                                          s))))
+                            (append add-tags-res)
+                            seq-uniq)))
+        (org-set-property org-journal-tags-default-tag-prop
+                          (mapconcat
+                           org-journal-tags-format-new-tag-function
+                           result-tags
+                           " "))))))
+
+(defun org-journal-tags-insert-tag ()
+  "Insert org-journal tag at point."
+  (interactive)
+  (thread-last
+    (cl-loop for tag being the hash-keys of
+             (alist-get :tags org-journal-tags-db)
+             collect tag)
+    (completing-read "Tag: " )
+    (funcall org-journal-tags-format-new-tag-function)
+    insert))
+
+;; View and global setup
 
 (defun org-journal-tags--setup-buffer ()
   "Setup the update of `org-journal-tags-db' after buffer save."
