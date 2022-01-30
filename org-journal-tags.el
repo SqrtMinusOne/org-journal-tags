@@ -491,7 +491,7 @@ DATE-JOURNAL is a list of (month day year)."
                 (org-journal-tags--record-file-processed)
                 (set-buffer-modified-p nil))))
 
-(defun org-journal-tags-sync-db ()
+(defun org-journal-tags-db-sync ()
   "Update the org-journal-tags database with all journal files."
   (interactive)
   (org-journal-tags-db-ensure)
@@ -502,7 +502,41 @@ DATE-JOURNAL is a list of (month day year)."
 
 ;; Manage tags in the current buffer
 
-(defun org-journal-tags-set-prop ()
+(defun org-journal-tags--prop-get-tags (elem)
+  "Get all org-journal tags from ELEM.
+
+ELEM should be a headline Org element."
+  (thread-last
+    (or (org-element-property :TAGS elem)
+        "")
+    split-string
+    (mapcar #'org-journal-tags--links-parse-link-str)
+    (seq-filter (lambda (t) t))))
+
+(cl-defun org-journal-tags-prop-apply-delta (&key elem add remove)
+  "Apply changes to org-journal tags to the current section.
+
+ELEM should be a level-2 Org headline.  The point is assumed to
+be set at the start of the headline.
+
+ADD is a list of tags to add to the current headline, REMOVE is a
+list of tags to remove."
+  (unless elem
+    (setq elem (org-element-at-point)))
+  (unless (= 2 (org-element-property :level elem))
+    (error "The element at point isn't a level 2 headline!"))
+  (save-excursion
+    (thread-last
+      (org-journal-tags--prop-get-tags elem)
+      (seq-filter (lambda (s) (not (seq-contains remove s))))
+      (append add)
+      seq-uniq
+      (seq-sort #'string-lessp)
+      (mapcar org-journal-tags-format-new-tag-function)
+      ((lambda (tags) (string-join tags " ")))
+      (org-set-property org-journal-tags-default-tag-prop))))
+
+(defun org-journal-tags-prop-set ()
   "Set up the \"tags\" property of the current org-journal section."
   (interactive)
   (org-journal-tags-db-ensure)
@@ -514,12 +548,7 @@ DATE-JOURNAL is a list of (month day year)."
       (let* ((all-tags (cl-loop for tag being the hash-keys of
                                 (alist-get :tags org-journal-tags-db)
                                 collect tag))
-             (tags (thread-last
-                     (or (org-element-property :TAGS elem)
-                         "")
-                     split-string
-                     (mapcar #'org-journal-tags--links-parse-link-str)
-                     (seq-filter (lambda (t) t))))
+             (tags (org-journal-tags--prop-get-tags elem))
              (add-tags (seq-difference all-tags tags))
              (options (append
                        (mapcar (lambda (tag) (format "+%s" tag)) add-tags)
@@ -543,19 +572,11 @@ DATE-JOURNAL is a list of (month day year)."
                                 changes
                                 (seq-filter (lambda (s)
                                               (string-match-p (rx bos "-") s)))
-                                (mapcar (lambda (s) (substring s 1)))))
-             (result-tags (thread-last
-                            tags
-                            (seq-filter (lambda (s) (not (seq-contains
-                                                          remove-tags-res
-                                                          s))))
-                            (append add-tags-res)
-                            seq-uniq)))
-        (org-set-property org-journal-tags-default-tag-prop
-                          (mapconcat
-                           org-journal-tags-format-new-tag-function
-                           result-tags
-                           " "))))))
+                                (mapcar (lambda (s) (substring s 1))))))
+        (org-journal-tags-prop-apply-delta
+         :elem elem
+         :add add-tags-res
+         :remove remove-tags-res)))))
 
 (defun org-journal-tags-insert-tag ()
   "Insert org-journal tag at point."
@@ -587,7 +608,7 @@ This does two things:
 If you don't want to turn this on, you can manually call:
 - `org-journal-tags-process-buffer' to process the current org-journal
   buffer
-- `org-journal-tags-sync-db' to sync the filesystem
+- `org-journal-tags-db-sync' to sync the filesystem
 - `org-journal-tags-db-save' to save the database"
   :global t
   (if org-journal-tags-autosync-mode
