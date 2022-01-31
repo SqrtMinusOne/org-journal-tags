@@ -75,6 +75,8 @@ The database is stored in the file, path to which is set by
   "A face to higlight various information."
   :group 'org-journal-tags)
 
+(defface org-)
+
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
   "A function to get the face of a tag.
 
@@ -265,7 +267,28 @@ from `org-element-parse-buffer'."
                  if (and i (>= i next-siblings)) return nil)
         (unless end
           (setq end (org-element-property :end paragraph)))
-        (list begin end)))))
+        (list begin (1- end))))))
+
+(defun org-journal-tags-get-link-region-at-point ()
+  "Select region referenced by org-jounral-tag link.
+
+The point should be exactly at the beginning of the link."
+  (interactive)
+  (let ((link (org-element-link-parser)))
+    (unless link
+      (user-error "No link found at point"))
+    (unless (string-equal (org-element-property :type link) "org-journal")
+      (user-error "Link is not of the \"org-jounral\" type"))
+    (let ((region (org-journal-tags--links-inline-get-region
+                   (org-element-map (org-element-parse-buffer) 'link
+                     (lambda (elem)
+                       (when (= (org-element-property :begin elem)
+                                (org-element-property :begin link))
+                         elem))
+                     nil t))))
+      (set-mark (nth 0 region))
+      (goto-char (nth 1 region))
+      (activate-mark))))
 
 (defun org-journal-tags--links-extract-inline ()
   "Extract inline links from the current org-journal buffer.
@@ -600,7 +623,8 @@ list of tags to remove."
     (funcall org-journal-tags-format-new-tag-function)
     insert))
 
-;; View and global setup
+
+;; Global setup
 
 (defun org-journal-tags--setup-buffer ()
   "Setup the update of `org-journal-tags-db' after buffer save."
@@ -629,62 +653,6 @@ If you don't want to turn this on, you can manually call:
     (remove-hook 'org-journal-mode-hook #'org-journal-tags--setup-buffer)
     (remove-hook 'kill-emacs-hook #'org-journal-tags-db-save-safe)))
 
-(defvar org-journal-tags-status-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map magit-section-mode-map)
-    (when (fboundp #'evil-define-key*)
-      (evil-define-key* 'normal map
-        (kbd "<tab>") #'magit-section-toggle
-        "q" #'kill-buffer-and-window))
-    map)
-  "A keymap for `org-journal-tags-status-mode'.")
-
-(define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
-  "TODO")
-
-(defun org-journal-tags--buffer-render-info ()
-  (let ((dates (org-journal--list-dates)))
-    (insert (format "Date:          %s\n"
-                    (propertize (format-time-string org-journal-date-format)
-                                'face 'org-journal-tags-info-face)))
-    (insert (format "Last record:   %s\n"
-                    (propertize (thread-last
-                                  (last dates)
-                                  car
-                                  org-journal-tags--parse-journal-date
-                                  (format-time-string org-journal-date-format))
-                                'face 'org-journal-tags-info-face)))
-    (insert (format "Total tags:    %s\n"
-                    (propertize (thread-first
-                                  (alist-get :tags org-journal-tags-db)
-                                  hash-table-count
-                                  number-to-string)
-                                'face 'org-journal-tags-info-face)))
-    (insert (format "Total dates:   %s\n"
-                    (propertize (number-to-string (length dates))
-                                'face 'org-journal-tags-info-face)))))
-
-(defun org-journal-tags--buffer-render-contents ()
-  "Render the contents of the org-journal-tags status buffer."
-  (let ((inhibit-read-only t))
-    (erase-buffer)
-    (org-journal-tags-status-mode)
-    (magit-insert-section (org-journal-tags)
-      (magit-insert-heading)
-      (org-journal-tags--buffer-render-info))))
-
-;;;###autoload
-(defun org-journal-tags-status ()
-  "TODO"
-  (interactive)
-  (org-journal-tags-db-ensure)
-  (when-let ((buffer (get-buffer "*org-journal-tags*")))
-    (kill-buffer buffer))
-  (let ((buffer (get-buffer-create "*org-journal-tags*")))
-    (with-current-buffer buffer
-      (org-journal-tags--buffer-render-contents))
-    (switch-to-buffer-other-window buffer)))
-
 
 ;; Query the DB
 
@@ -711,14 +679,16 @@ REF should be an instance of `org-journal-tag-reference'."
     (unless (gethash file-name org-journal-tags--files-cache)
       (with-temp-buffer
         (message "Parsing: %s" file-name)
-        (let (org-mode-hook)
-          (org-mode))
         (insert-file-contents file-name)
+        (setq org-startup-indented nil)
+        (let ((org-mode-hook nil))
+          (org-mode))
         (org-journal-tags--ensure-decrypted)
+        (org-font-lock-ensure)
         (puthash file-name (buffer-string)
                  org-journal-tags--files-cache)))
     (string-trim
-     (substring-no-properties
+     (substring
       (gethash file-name org-journal-tags--files-cache)
       (1- (org-journal-tag-reference-ref-start ref))
       (1- (org-journal-tag-reference-ref-end ref))))))
@@ -727,7 +697,7 @@ REF should be an instance of `org-journal-tag-reference'."
   "Get child org-journal tags for PARENT-TAG.
 
 A tag is considered to be a child of PARENT-TAG if it stars with
-\"<parent-tag-value>.\""
+\"<parent-tag-value>.\".  PARENT-TAG itself is also returned."
   (cl-loop for tag being the hash-keys of (alist-get :tags org-journal-tags-db)
            if (string-match-p
                (rx bos (literal parent-tag) (or eos (: "." (* nonl))))
@@ -842,31 +812,146 @@ REFS is a list of instances of `org-journal-tag-reference'."
               append (cl-loop for refs being the hash-values of times-hash
                               append refs)))))
 
-(cl-defun org-journal-tags--query (&key tag-names start-date end-date children only-refs)
-  (when-let ((dates (thread-last (org-journal--list-dates)
-                                 (mapcar (lambda (date)
-                                           (time-convert
-                                            (org-journal-tags--parse-journal-date date)
-                                            'integer)))
-                                 (seq-filter
-                                  (lambda (date)
-                                    (and (or (null start-date) (>= date start-date))
-                                         (or (null end-date) (<= date end-date)))))))
+(cl-defun org-journal-tags-query (&key tag-names start-date end-date children only-refs)
+  "Query the org-journal-tags database.
+
+TAG-NAMES is a list of strings with tag names.
+
+START-DATE and END-DATE are UNIX timestamps that set the search
+boundaries.
+
+If CHILDREN is non-nil, also search within all the children of TAG-NAMES.
+
+The returned value is a list of alists with following keys:
+- `:ref' is an instance of `org-journal-tag-reference'
+- `:string' is the referenced string.
+Returning strings can be turned off by setting ONLY-REFS to non-nil."
+  (org-journal-tags-db-ensure)
+  (when-let ((dates (thread-last
+                      (org-journal--list-dates)
+                      (mapcar (lambda (date)
+                                (time-convert
+                                 (org-journal-tags--parse-journal-date date)
+                                 'integer)))
+                      (seq-filter
+                       (lambda (date)
+                         (and (or (null start-date) (>= date start-date))
+                              (or (null end-date) (<= date end-date)))))))
              (all-tag-names (seq-uniq
                              (cl-loop for tag-name in tag-names
                                       unless children collect tag-name
                                       if children append
-                                      (org-journal-tags--query-get-child-tags tag-name))))
+                                      (org-journal-tags--query-get-child-tags
+                                       tag-name))))
              (refs (org-journal-tags--query-merge-refs
-                    (cl-loop for date in dates append
-                             (cl-loop for tag-name in all-tag-names
-                                      for tag = (gethash tag-name (alist-get :tags org-journal-tags-db))
-                                      append (gethash date (org-journal-tag-dates tag)))))))
+                    (cl-loop
+                     for date in dates append
+                     (cl-loop
+                      for tag-name in all-tag-names
+                      for tag = (gethash tag-name
+                                         (alist-get :tags org-journal-tags-db))
+                      append (gethash date (org-journal-tag-dates tag)))))))
     (mapcar (lambda (ref)
               (if only-refs
                   `((:ref . ,ref))
                 `((:ref . ,ref) (:string . ,(org-journal-tags--extract-ref ref)))))
             refs)))
+
+
+;; View
+
+(defvar org-journal-tags-status-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map magit-section-mode-map)
+    (when (fboundp #'evil-define-key*)
+      (evil-define-key* 'normal map
+        (kbd "<tab>") #'magit-section-toggle
+        "q" '(lambda ()
+               (interactive)
+               (quit-window t))))
+    map)
+  "A keymap for `org-journal-tags-status-mode'.")
+
+(define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
+  "TODO")
+
+(defun org-journal-tags--buffer-render-info ()
+  (let ((dates (org-journal--list-dates)))
+    (insert (format "Date:          %s\n"
+                    (propertize (format-time-string org-journal-date-format)
+                                'face 'org-journal-tags-info-face)))
+    (insert (format "Last record:   %s\n"
+                    (propertize (thread-last
+                                  (last dates)
+                                  car
+                                  org-journal-tags--parse-journal-date
+                                  (format-time-string org-journal-date-format))
+                                'face 'org-journal-tags-info-face)))
+    (insert (format "Total tags:    %s\n"
+                    (propertize (thread-first
+                                  (alist-get :tags org-journal-tags-db)
+                                  hash-table-count
+                                  number-to-string)
+                                'face 'org-journal-tags-info-face)))
+    (insert (format "Total dates:   %s\n"
+                    (propertize (number-to-string (length dates))
+                                'face 'org-journal-tags-info-face)))))
+
+(defun org-journal-tags--buffer-render-contents ()
+  "Render the contents of the org-journal-tags status buffer."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (org-journal-tags-status-mode)
+    (magit-insert-section (org-journal-tags)
+      (magit-insert-heading)
+      (org-journal-tags--buffer-render-info))))
+
+;;;###autoload
+(defun org-journal-tags-status ()
+  "TODO"
+  (interactive)
+  (org-journal-tags-db-ensure)
+  (when-let ((buffer (get-buffer "*org-journal-tags*")))
+    (kill-buffer buffer))
+  (let ((buffer (get-buffer-create "*org-journal-tags*")))
+    (with-current-buffer buffer
+      (org-journal-tags--buffer-render-contents))
+    (switch-to-buffer-other-window buffer)))
+
+(defclass org-journal-tags-date-section (magit-section)
+  ((heading-highlight-face :initform 'warning)))
+
+(defun org-journal-tags--buffer-render-query (query-data)
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (org-journal-tags-status-mode)
+    (magit-insert-section (org-journal-tags-query)
+      (dolist (date-refs
+               (seq-group-by
+                (lambda (datum)
+                  (org-journal-tag-reference-date
+                   (alist-get :ref datum)))
+                query-data))
+        (magit-insert-section section (org-journal-tags-date-section)
+          (thread-last date-refs
+                       car
+                       seconds-to-time
+                       (format-time-string org-journal-date-format)
+                       (format "%s\n")
+                       ((lambda (s) (propertize s 'face 'magit-section-heading)))
+                       insert)
+          (magit-insert-heading)
+          (dolist (datum (cdr date-refs))
+            (magit-insert-section (org-journal-tags-time-section)
+              (thread-last
+                (alist-get :ref datum)
+                org-journal-tag-reference-time
+                (format "%s\n")
+                ((lambda (s) (propertize s 'face 'magit-section-secondary-heading)))
+                insert)
+              (magit-insert-heading)
+              (insert (alist-get :string datum))
+              (insert "\n"))))))))
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
