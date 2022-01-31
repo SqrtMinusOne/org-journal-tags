@@ -36,7 +36,7 @@
 (require 'org-macs)
 
 (defgroup org-journal-tags ()
-  "Manage tags for org-journal"
+  "Manage tags for org-journal."
   :group 'org-journal)
 
 (defcustom org-journal-tags-db-file
@@ -100,13 +100,18 @@ Used by `org-journal-tags-insert-tag' and
   :type 'function
   :group 'org-journal-tags)
 
+(defcustom org-journal-tags-query-descending-sort nil
+  "If t, do descending sort for the query results."
+  :type 'boolean
+  :group 'org-journal-tags)
+
 (defun org-journal-tags--format-new-tag-default (tag)
   "Default formatting function for new org journal tags.
 
 TAG is a string with the tag name."
   (format "[[org-journal:%s][#%s]]" tag tag))
 
-(defun org-journal-tags--face-default (tag)
+(defun org-journal-tags--face-default (&rest _)
   "A function to return the default tag face.
 
 TAG is a string with the tag name."
@@ -184,7 +189,7 @@ with exceptions."
 
 
 (defun org-journal-tags-db-unload ()
-  "Unload the org-journal-tags database"
+  "Unload the org-journal-tags database."
   (interactive)
   (org-journal-tags-db-save)
   (setf org-journal-tags-db nil))
@@ -196,7 +201,7 @@ with exceptions."
   "TODO. Eventually this fill do something."
   (message (org-journal-tags--links-get-tag tag)))
 
-(defun org-journal-tags--complete (&optional arg)
+(defun org-journal-tags--complete (&optional _)
   "Create an org-journal-tags link using completion."
   (org-journal-tags-db-ensure)
   (let ((name (completing-read
@@ -394,7 +399,7 @@ of (tag-name . `org-journal-tag-reference')"
     references
     (mapcar (lambda (ref) (org-journal-tag-reference-date (cdr ref))))
     seq-uniq
-    (mapcar #'org-journal-tags--clear-date))
+    (mapc #'org-journal-tags--clear-date))
   (cl-loop for ref-elem in references
            for tag-name = (car ref-elem)
            for ref = (cdr ref-elem)
@@ -419,7 +424,8 @@ of (tag-name . `org-journal-tag-reference')"
    (time-convert
     (nth 5 (file-attributes (buffer-file-name)))
     'integer)
-   (alist-get :files org-journal-tags-db)))
+   (alist-get :files org-journal-tags-db))
+  (org-journal-tags--cache-invalidate (buffer-file-name)))
 
 ;;;###autoload
 (defun org-journal-tags-process-buffer (&optional process-file)
@@ -513,7 +519,7 @@ ELEM should be a headline Org element."
         "")
     split-string
     (mapcar #'org-journal-tags--links-parse-link-str)
-    (seq-filter (lambda (t) t))))
+    (seq-filter (lambda (s) s))))
 
 (cl-defun org-journal-tags-prop-apply-delta (&key elem add remove)
   "Apply changes to org-journal tags to the current section.
@@ -639,14 +645,14 @@ If you don't want to turn this on, you can manually call:
 (defun org-journal-tags--buffer-render-info ()
   (let ((dates (org-journal--list-dates)))
     (insert (format "Date:          %s\n"
-                    (propertize (format-time-string "%Y-%m-%d")
+                    (propertize (format-time-string org-journal-date-format)
                                 'face 'org-journal-tags-info-face)))
     (insert (format "Last record:   %s\n"
                     (propertize (thread-last
                                   (last dates)
                                   car
                                   org-journal-tags--parse-journal-date
-                                  (format-time-string "%Y-%m-%d"))
+                                  (format-time-string org-journal-date-format))
                                 'face 'org-journal-tags-info-face)))
     (insert (format "Total tags:    %s\n"
                     (propertize (thread-first
@@ -678,6 +684,189 @@ If you don't want to turn this on, you can manually call:
     (with-current-buffer buffer
       (org-journal-tags--buffer-render-contents))
     (switch-to-buffer-other-window buffer)))
+
+
+;; Query the DB
+
+(defvar org-journal-tags--files-cache (make-hash-table :test #'equal)
+  "A cache for org-journal files used to speed up queries.
+
+Keys are filenames, values are the correspoinding buffer strings.")
+
+(defun org-journal-tags--cache-invalidate (file-name)
+  "Invalid file contents cache for FILE-NAME."
+  (remhash file-name org-journal-tags--files-cache))
+
+(defun org-journal-tags-cache-reset ()
+  "Clear the org-journal-tags file contents cache."
+  (interactive)
+  (clrhash org-journal-tags--files-cache))
+
+(defun org-journal-tags--extract-ref (ref)
+  "Get a string references by the reference.
+
+REF should be an instance of `org-journal-tag-reference'."
+  (let ((file-name (org-journal--get-entry-path
+                    (org-journal-tag-reference-date ref))))
+    (unless (gethash file-name org-journal-tags--files-cache)
+      (with-temp-buffer
+        (message "Parsing: %s" file-name)
+        (let (org-mode-hook)
+          (org-mode))
+        (insert-file-contents file-name)
+        (org-journal-tags--ensure-decrypted)
+        (puthash file-name (buffer-string)
+                 org-journal-tags--files-cache)))
+    (string-trim
+     (substring-no-properties
+      (gethash file-name org-journal-tags--files-cache)
+      (1- (org-journal-tag-reference-ref-start ref))
+      (1- (org-journal-tag-reference-ref-end ref))))))
+
+(defun org-journal-tags--query-get-child-tags (parent-tag)
+  "Get child org-journal tags for PARENT-TAG.
+
+A tag is considered to be a child of PARENT-TAG if it stars with
+\"<parent-tag-value>.\""
+  (cl-loop for tag being the hash-keys of (alist-get :tags org-journal-tags-db)
+           if (string-match-p
+               (rx bos (literal parent-tag) (or eos (: "." (* nonl))))
+               tag)
+           collect tag))
+
+(defun org-journal-tags--nested-segment-p (a1 a2 b1 b2)
+  "Check if segment [B1, B2] is nested in [A1, A2]."
+  (and (<= a1 b1) (>= a2 b2)))
+
+(defun org-journal-tags--intersecting-segment-p (a1 a2 b1 b2)
+  "Check if [A1, A2] intersects with (not nested in!) [B1, B2]."
+  (or (and (<= a1 b1) (<= b1 a2))
+      (and (<= b1 a1) (<= a1 b2))))
+
+(defun org-journal-tags--query-merge-refs-push (time-refs ref)
+  "Smartly add REF to the list of org-journal reference.
+
+REF is an instance of `org-journal-tag-reference', TIME-REFS is a
+list of such instances.  All references are assumed to be of
+equal time and date.
+
+If REF is nested in one or many of the references of TIME-REFS or
+vice versa, a larger reference will be kept.
+
+If REF intersects with some reference in TIME-REFS, an
+intersection of the two references will be saved.
+
+Thus, after this operation there will be no intersection between
+references."
+  (or (cl-loop
+       with ref-start = (org-journal-tag-reference-ref-start ref)
+       with ref-end = (org-journal-tag-reference-ref-end ref)
+       for old-ref in time-refs
+       for old-ref-start = (org-journal-tag-reference-ref-start old-ref)
+       for old-ref-end = (org-journal-tag-reference-ref-end old-ref)
+       ;; If the new reference is nested in the old one, do nothing
+       if (org-journal-tags--nested-segment-p
+           old-ref-start old-ref-end
+           ref-start ref-end)
+       return time-refs
+       ;; If some old reference is nested in the new one, replace old one(s)
+       if (org-journal-tags--nested-segment-p
+           ref-start ref-end
+           old-ref-start old-ref-end)
+       return (append
+               (seq-remove (lambda (r)
+                             (org-journal-tags--nested-segment-p
+                              ref-start ref-end
+                              (org-journal-tag-reference-ref-start r)
+                              (org-journal-tag-reference-ref-end r)))
+                           time-refs)
+               (list ref))
+       ;; If the new reference intersects with some old one, put
+       ;; the intersection of all
+       if (org-journal-tags--intersecting-segment-p
+           old-ref-start old-ref-end
+           ref-start ref-end)
+       return (let ((int (seq-filter
+                          (lambda (r)
+                            (org-journal-tags--intersecting-segment-p
+                             ref-start ref-end
+                             (org-journal-tag-reference-ref-start r)
+                             (org-journal-tag-reference-ref-end r)))
+                          time-refs)))
+                (append
+                 (seq-difference time-refs int)
+                 (list (org-journal-tag-reference--create
+                        :ref-start (seq-min
+                                    (append
+                                     (mapcar #'org-journal-tag-reference-ref-start
+                                             int)
+                                     (list ref-start)))
+                        :ref-end (seq-max
+                                  (append
+                                   (mapcar #'org-journal-tag-reference-ref-end
+                                           int)
+                                   (list ref-end)))
+                        :time (org-journal-tag-reference-time ref)
+                        :date (org-journal-tag-reference-date ref))))))
+      (append time-refs (list ref))))
+
+(defun org-journal-tags--query-merge-refs (refs)
+  "Merge and sort intersecting and nested org-journal-tags refs.
+
+REFS is a list of instances of `org-journal-tag-reference'."
+  (let ((dates-hash (make-hash-table)))
+    (cl-loop
+     for ref in refs
+     for date = (org-journal-tag-reference-date ref)
+     for time = (org-journal-tag-reference-time ref)
+     do (progn
+          (unless (gethash date dates-hash)
+            (puthash date (make-hash-table :test #'equal) dates-hash))
+          (let ((times-hash (gethash date dates-hash)))
+            (if (not (gethash time times-hash))
+                (puthash time (list ref) times-hash)
+              (puthash time
+                       (org-journal-tags--query-merge-refs-push
+                        (gethash time times-hash) ref)
+                       times-hash)))))
+    (seq-sort
+     (lambda (ref-1 ref-2)
+       (let ((order (and (<= (org-journal-tag-reference-ref-start ref-1)
+                             (org-journal-tag-reference-ref-start ref-2))
+                         (string-lessp (org-journal-tag-reference-time ref-1)
+                                       (org-journal-tag-reference-time ref-2)))))
+         (if org-journal-tags-query-descending-sort
+             (not order)
+           order)))
+     (cl-loop for times-hash being the hash-values of dates-hash
+              append (cl-loop for refs being the hash-values of times-hash
+                              append refs)))))
+
+(cl-defun org-journal-tags--query (&key tag-names start-date end-date children only-refs)
+  (when-let ((dates (thread-last (org-journal--list-dates)
+                                 (mapcar (lambda (date)
+                                           (time-convert
+                                            (org-journal-tags--parse-journal-date date)
+                                            'integer)))
+                                 (seq-filter
+                                  (lambda (date)
+                                    (and (or (null start-date) (>= date start-date))
+                                         (or (null end-date) (<= date end-date)))))))
+             (all-tag-names (seq-uniq
+                             (cl-loop for tag-name in tag-names
+                                      unless children collect tag-name
+                                      if children append
+                                      (org-journal-tags--query-get-child-tags tag-name))))
+             (refs (org-journal-tags--query-merge-refs
+                    (cl-loop for date in dates append
+                             (cl-loop for tag-name in all-tag-names
+                                      for tag = (gethash tag-name (alist-get :tags org-journal-tags-db))
+                                      append (gethash date (org-journal-tag-dates tag)))))))
+    (mapcar (lambda (ref)
+              (if only-refs
+                  `((:ref . ,ref))
+                `((:ref . ,ref) (:string . ,(org-journal-tags--extract-ref ref)))))
+            refs)))
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
