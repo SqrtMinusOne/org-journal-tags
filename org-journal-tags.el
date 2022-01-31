@@ -421,6 +421,7 @@ of (tag-name . `org-journal-tag-reference')"
     'integer)
    (alist-get :files org-journal-tags-db)))
 
+;;;###autoload
 (defun org-journal-tags-process-buffer (&optional process-file)
   "Update the org-journal-tags with the current buffer.
 
@@ -491,6 +492,7 @@ DATE-JOURNAL is a list of (month day year)."
                 (org-journal-tags--record-file-processed)
                 (set-buffer-modified-p nil))))
 
+;;;###autoload
 (defun org-journal-tags-db-sync ()
   "Update the org-journal-tags database with all journal files."
   (interactive)
@@ -536,6 +538,7 @@ list of tags to remove."
       ((lambda (tags) (string-join tags " ")))
       (org-set-property org-journal-tags-default-tag-prop))))
 
+;;;###autoload
 (defun org-journal-tags-prop-set ()
   "Set up the \"tags\" property of the current org-journal section."
   (interactive)
@@ -578,9 +581,11 @@ list of tags to remove."
          :add add-tags-res
          :remove remove-tags-res)))))
 
+;;;###autoload
 (defun org-journal-tags-insert-tag ()
   "Insert org-journal tag at point."
   (interactive)
+  (org-journal-tags-db-ensure)
   (thread-last
     (cl-loop for tag being the hash-keys of
              (alist-get :tags org-journal-tags-db)
