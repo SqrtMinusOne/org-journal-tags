@@ -75,8 +75,6 @@ The database is stored in the file, path to which is set by
   "A face to higlight various information."
   :group 'org-journal-tags)
 
-(defface org-)
-
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
   "A function to get the face of a tag.
 
@@ -102,8 +100,8 @@ Used by `org-journal-tags-insert-tag' and
   :type 'function
   :group 'org-journal-tags)
 
-(defcustom org-journal-tags-query-descending-sort nil
-  "If t, do descending sort for the query results."
+(defcustom org-journal-tags-query-ascending-sort nil
+  "If t, do ascending sort for the query results."
   :type 'boolean
   :group 'org-journal-tags)
 
@@ -189,13 +187,25 @@ with exceptions."
   (ignore-errors
     (org-journal-tags-db-save)))
 
+(defun org-journal-tags--valid-tag-p (tag-name)
+  "Check if TAG-NAME is a valid tag name for org-journal-tags.
+
+Empty string is reserved as a \"tag\" that references every
+record in the journal."
+  (not (string-empty-p tag-name)))
+
+(defun org-journal-tags--list-tags ()
+  "Return all saved org-journal tag names."
+  (cl-loop for tag-name being the hash-keys of
+           (alist-get :tags org-journal-tags-db)
+           if (org-journal-tags--valid-tag-p tag-name)
+           collect tag-name))
 
 (defun org-journal-tags-db-unload ()
   "Unload the org-journal-tags database."
   (interactive)
   (org-journal-tags-db-save)
   (setf org-journal-tags-db nil))
-
 
 ;; Org link
 
@@ -208,9 +218,9 @@ with exceptions."
   (org-journal-tags-db-ensure)
   (let ((name (completing-read
                "Tag: "
-               (cl-loop for k being the hash-keys of
-                        (alist-get :tags org-journal-tags-db)
-                        collect k))))
+               (org-journal-tags--list-tags))))
+    (unless (org-journal-tags--valid-tag-p name)
+      (user-error "Invalid tag name: %s" name))
     (format "org-journal:%s" name)))
 
 (org-link-set-parameters
@@ -309,23 +319,24 @@ paragraphs."
                         org-journal-created-property-timestamp-format))
               time
               date)
-          (cl-loop while elem do (setq elem (org-element-property :parent elem))
-                   when (and (eq (org-element-type elem) 'headline)
-                             (= (org-element-property :level elem) 2))
-                   do (setq time (org-element-property :raw-value elem))
-                   when (and (eq (org-element-type elem) 'headline)
-                             (= (org-element-property :level elem) 1))
-                   do (let ((created (org-element-property :CREATED elem)))
-                        (setq date
-                              (org-journal-tags--parse-journal-created
-                               created date-re))))
-          (cons
-           tag
-           (org-journal-tag-reference--create
-            :ref-start (nth 0 region)
-            :ref-end (nth 1 region)
-            :time time
-            :date date)))))))
+          (when (org-journal-tags--valid-tag-p tag)
+            (cl-loop while elem do (setq elem (org-element-property :parent elem))
+                     when (and (eq (org-element-type elem) 'headline)
+                               (= (org-element-property :level elem) 2))
+                     do (setq time (org-element-property :raw-value elem))
+                     when (and (eq (org-element-type elem) 'headline)
+                               (= (org-element-property :level elem) 1))
+                     do (let ((created (org-element-property :CREATED elem)))
+                          (setq date
+                                (org-journal-tags--parse-journal-created
+                                 created date-re))))
+            (cons
+             tag
+             (org-journal-tag-reference--create
+              :ref-start (nth 0 region)
+              :ref-end (nth 1 region)
+              :time time
+              :date date))))))))
 
 (defun org-journal-tags--links-parse-link-str (str)
   "Extract the tag name from a text representation of org link.
@@ -355,33 +366,37 @@ STR should be a string of one of the following formats:
     (string-to-number (match-string 1 created))) ; year
    'integer))
 
-(defun org-journal-tags--links-extract-section ()
+(defun org-journal-tags--links-extract-section (&optional add-empty)
   "Extract section-wide links.
 
 These links can be placed in the :TAGS: property of the section
-and reference the entire section."
+and reference the entire section.
+
+If ADD-EMPTY is non-nil, also add an empty tag that references
+every section."
   (let (result
         (date-re (org-journal--format->regex
                   org-journal-created-property-timestamp-format)))
     (org-element-map (org-element-parse-buffer) 'headline
       (lambda (elem)
-        (when-let ((tags-prop (org-element-property :TAGS elem))
-                   (_ (= (org-element-property :level elem) 2))
+        (when-let ((_ (= (org-element-property :level elem) 2))
                    (created
                     (when-let (created (org-element-property
                                         :CREATED
                                         (org-element-property :parent elem)))
-                      (org-journal-tags--parse-journal-created created date-re))))
-          (cl-loop for link in (split-string tags-prop)
-                   do (when-let ((tag (org-journal-tags--links-parse-link-str link)))
-                        (push (cons
-                               tag
-                               (org-journal-tag-reference--create
-                                :ref-start (org-element-property :contents-begin elem)
-                                :ref-end (org-element-property :contents-end elem)
-                                :time (org-element-property :raw-value elem)
-                                :date created))
-                              result))))))
+                      (org-journal-tags--parse-journal-created created date-re)))
+                   (ref (org-journal-tag-reference--create
+                         :ref-start (org-element-property :contents-begin elem)
+                         :ref-end (org-element-property :contents-end elem)
+                         :time (org-element-property :raw-value elem)
+                         :date created)))
+          (when add-empty
+            (push (cons "" (copy-org-journal-tag-reference ref)) result))
+          (when-let ((tags (org-element-property :TAGS elem)))
+            (cl-loop for link in (split-string tags)
+                     do (when-let ((tag (org-journal-tags--links-parse-link-str link)))
+                          (push (cons tag (copy-org-journal-tag-reference ref))
+                                result)))))))
     result))
 
 (defun org-journal-tags--links-extract ()
@@ -393,7 +408,7 @@ can repeat."
   (org-journal-tags--ensure-decrypted)
   (append
    (org-journal-tags--links-extract-inline)
-   (org-journal-tags--links-extract-section)))
+   (org-journal-tags--links-extract-section t)))
 
 
 (defun org-journal-tags--clear-date (date)
@@ -598,12 +613,12 @@ list of tags to remove."
              (add-tags-res (thread-last
                              changes
                              (seq-filter (lambda (s)
-                                           (string-match-p (rx bos "+") s)))
+                                           (string-match-p (rx bos "+" (+ nonl)) s)))
                              (mapcar (lambda (s) (substring s 1)))))
              (remove-tags-res (thread-last
                                 changes
                                 (seq-filter (lambda (s)
-                                              (string-match-p (rx bos "-") s)))
+                                              (string-match-p (rx bos "-" (+ nonl)) s)))
                                 (mapcar (lambda (s) (substring s 1))))))
         (org-journal-tags-prop-apply-delta
          :elem elem
@@ -614,15 +629,8 @@ list of tags to remove."
 (defun org-journal-tags-insert-tag ()
   "Insert org-journal tag at point."
   (interactive)
-  (org-journal-tags-db-ensure)
-  (thread-last
-    (cl-loop for tag being the hash-keys of
-             (alist-get :tags org-journal-tags-db)
-             collect tag)
-    (completing-read "Tag: " )
-    (funcall org-journal-tags-format-new-tag-function)
-    insert))
-
+  (insert
+   (org-journal-tags--complete)))
 
 ;; Global setup
 
@@ -780,6 +788,21 @@ references."
                         :date (org-journal-tag-reference-date ref))))))
       (append time-refs (list ref))))
 
+(defun org-journal-tags--query-compare-refs (ref-1 ref-2)
+  "Compare date and time of REF-1 and REF-2.
+
+If dates of REF-1 and REF-2 are equal, return t if REF-1 has
+lesser time.  Otherwise, return t if REF-1 has greater date (or
+lesser date if `org-journal-tags-query-ascending-sort' is
+non-nil)"
+  (let ((date-1 (org-journal-tag-reference-date ref-1))
+        (date-2 (org-journal-tag-reference-date ref-2)))
+    (if (= date-1 date-2)
+        (string-lessp (org-journal-tag-reference-time ref-1)
+                      (org-journal-tag-reference-time ref-2))
+      (funcall (if org-journal-tags-query-ascending-sort #'<= #'>=)
+               date-1 date-2))))
+
 (defun org-journal-tags--query-merge-refs (refs)
   "Merge and sort intersecting and nested org-journal-tags refs.
 
@@ -800,14 +823,7 @@ REFS is a list of instances of `org-journal-tag-reference'."
                         (gethash time times-hash) ref)
                        times-hash)))))
     (seq-sort
-     (lambda (ref-1 ref-2)
-       (let ((order (and (<= (org-journal-tag-reference-ref-start ref-1)
-                             (org-journal-tag-reference-ref-start ref-2))
-                         (string-lessp (org-journal-tag-reference-time ref-1)
-                                       (org-journal-tag-reference-time ref-2)))))
-         (if org-journal-tags-query-descending-sort
-             (not order)
-           order)))
+     #'org-journal-tags--query-compare-refs
      (cl-loop for times-hash being the hash-values of dates-hash
               append (cl-loop for refs being the hash-values of times-hash
                               append refs)))))
@@ -822,10 +838,11 @@ boundaries.
 
 If CHILDREN is non-nil, also search within all the children of TAG-NAMES.
 
-The returned value is a list of alists with following keys:
+If ONLY-REFS is nil, the returned value is a list of alists with
+following keys:
 - `:ref' is an instance of `org-journal-tag-reference'
 - `:string' is the referenced string.
-Returning strings can be turned off by setting ONLY-REFS to non-nil."
+Otherwise the returned value is a list of `org-journal-tag-reference'."
   (org-journal-tags-db-ensure)
   (when-let ((dates (thread-last
                       (org-journal--list-dates)
@@ -837,12 +854,14 @@ Returning strings can be turned off by setting ONLY-REFS to non-nil."
                        (lambda (date)
                          (and (or (null start-date) (>= date start-date))
                               (or (null end-date) (<= date end-date)))))))
-             (all-tag-names (seq-uniq
-                             (cl-loop for tag-name in tag-names
-                                      unless children collect tag-name
-                                      if children append
-                                      (org-journal-tags--query-get-child-tags
-                                       tag-name))))
+             (all-tag-names (if tag-names
+                                (seq-uniq
+                                 (cl-loop for tag-name in tag-names
+                                          unless children collect tag-name
+                                          if children append
+                                          (org-journal-tags--query-get-child-tags
+                                           tag-name)))
+                              '("")))
              (refs (org-journal-tags--query-merge-refs
                     (cl-loop
                      for date in dates append
@@ -853,7 +872,7 @@ Returning strings can be turned off by setting ONLY-REFS to non-nil."
                       append (gethash date (org-journal-tag-dates tag)))))))
     (mapcar (lambda (ref)
               (if only-refs
-                  `((:ref . ,ref))
+                  ref
                 `((:ref . ,ref) (:string . ,(org-journal-tags--extract-ref ref)))))
             refs)))
 
@@ -951,7 +970,9 @@ Returning strings can be turned off by setting ONLY-REFS to non-nil."
                 insert)
               (magit-insert-heading)
               (insert (alist-get :string datum))
-              (insert "\n"))))))))
+              (insert "\n"))))))
+    (goto-char (point-min))
+    (magit-section-show-level-2-all)))
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
