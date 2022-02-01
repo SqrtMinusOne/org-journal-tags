@@ -630,8 +630,13 @@ list of tags to remove."
   "Insert org-journal tag at point."
   (interactive)
   (insert
-   (org-journal-tags--complete)))
-
+   (let ((name (completing-read
+                "Tag: "
+                (org-journal-tags--list-tags))))
+     (unless (org-journal-tags--valid-tag-p name)
+       (user-error "Invalid tag name: %s" name))
+     (funcall org-journal-tags-format-new-tag-function
+              name))))
 ;; Global setup
 
 (defun org-journal-tags--setup-buffer ()
