@@ -1101,11 +1101,7 @@ If ORDER is 'ascending, the references list will be sorted in
 ascending order.  If ORDER is anything else except nil, the order
 will be descending.
 
-If ONLY-REFS is nil, the returned value is a list of alists with
-following keys:
-- `:ref' is an instance of `org-journal-tag-reference'
-- `:string' is the referenced string.
-Otherwise the returned value is a list of `org-journal-tag-reference'."
+The returned value is a list of `org-journal-tag-reference'."
   (org-journal-tags-db-ensure)
   (let ((dates (org-journal-tags--query-get-date-list start-date end-date))
         results)
@@ -1124,12 +1120,6 @@ Otherwise the returned value is a list of `org-journal-tag-reference'."
       (setq results
             (org-journal-tags--query-sort-refs
              results (eq order 'ascending))))
-    (unless only-refs
-      (setq results
-            (mapcar (lambda (ref)
-                      `((:ref . ,ref)
-                        (:string . ,(org-journal-tags--extract-ref ref))))
-                    results)))
     results))
 
 
@@ -1194,19 +1184,39 @@ Otherwise the returned value is a list of `org-journal-tag-reference'."
     (switch-to-buffer-other-window buffer)))
 
 (defclass org-journal-tags-date-section (magit-section)
-  ((heading-highlight-face :initform 'warning)))
+  (()))
 
-(defun org-journal-tags--buffer-render-query (query-data)
+(defclass org-journal-tags-time-section (magit-section)
+  (()))
+
+(defvar-local org-journal-tags--query-refs nil)
+
+(defvar org-journal-tags-query-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map magit-section-mode-map)
+    (when (fboundp #'evil-define-key*)
+      (evil-define-key* 'normal map
+        (kbd "<tab>") #'magit-section-toggle
+        "q" '(lambda ()
+               (interactive)
+               (quit-window t))))
+    map)
+  "A keymap for `org-journal-tags-query-mode'.")
+
+(define-derived-mode org-journal-tags-query-mode magit-section "Org Journal Tags Query"
+  "TODO")
+
+(defun org-journal-tags--buffer-render-query (refs)
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (org-journal-tags-status-mode)
+    (setq-local org-journal-tags--query-refs refs)
+    (unless (eq major-mode 'org-journal-tags-query-mode)
+      (org-journal-tags-query-mode))
     (magit-insert-section (org-journal-tags-query)
       (dolist (date-refs
                (seq-group-by
-                (lambda (datum)
-                  (org-journal-tag-reference-date
-                   (alist-get :ref datum)))
-                query-data))
+                #'org-journal-tag-reference-date
+                refs))
         (magit-insert-section section (org-journal-tags-date-section)
           (thread-last date-refs
                        car
@@ -1216,16 +1226,16 @@ Otherwise the returned value is a list of `org-journal-tag-reference'."
                        ((lambda (s) (propertize s 'face 'magit-section-heading)))
                        insert)
           (magit-insert-heading)
-          (dolist (datum (cdr date-refs))
+          (dolist (ref (cdr date-refs))
             (magit-insert-section (org-journal-tags-time-section)
               (thread-last
-                (alist-get :ref datum)
+                ref
                 org-journal-tag-reference-time
                 (format "%s\n")
                 ((lambda (s) (propertize s 'face 'magit-section-secondary-heading)))
                 insert)
               (magit-insert-heading)
-              (insert (alist-get :string datum))
+              (insert (org-journal-tags--extract-ref ref))
               (insert "\n"))))))
     (goto-char (point-min))
     (magit-section-show-level-2-all)))
