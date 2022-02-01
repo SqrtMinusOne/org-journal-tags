@@ -1023,6 +1023,24 @@ A tag is considered to be a child of PARENT-TAG if it stars with
                tag)
            collect tag))
 
+(defun org-journal-tags--query-get-tag-names (tag-names &optional children)
+  "Return the list of tag names to query.
+
+TAG-NAMES is a list of strings or nil.  If it's nil, a list with
+an empty string is returned, which is a root tag for every other
+tag.
+
+If CHIDLREN is non-nil, names of tags in TAG-NAMES and all their
+children are returned.  Otherwise, only tags in TAG-NAMES are
+returned."
+  (if tag-names
+      (seq-uniq (cl-loop for tag-name in tag-names
+                         unless children collect tag-name
+                         if children append
+                         (org-journal-tags--query-get-child-tags
+                          tag-name)))
+    '("")))
+
 (defvar org-journal-tags--files-cache (make-hash-table :test #'equal)
   "A cache for org-journal files used to speed up queries.
 
@@ -1060,13 +1078,14 @@ REF should be an instance of `org-journal-tag-reference'."
       (1- (org-journal-tag-reference-ref-start ref))
       (1- (org-journal-tag-reference-ref-end ref))))))
 
-(cl-defun org-journal-tags-query (&key tag-names start-date end-date
-                                       children order only-refs refs)
+(cl-defun org-journal-tags-query (&key tag-names exclude-tag-names start-date
+                                       end-date children order only-refs)
   "Query the org-journal-tags database.
 
 All the keys are optional.
 
-TAG-NAMES is a list of strings with tag names.
+TAG-NAMES is a list of strings with tag names to include.
+EXCLUDE-TAG-NAMES is a list of string with tag names to exclude.
 
 START-DATE and END-DATE are UNIX timestamps that set the search
 boundaries.
@@ -1085,17 +1104,16 @@ Otherwise the returned value is a list of `org-journal-tag-reference'."
   (org-journal-tags-db-ensure)
   (let ((dates (org-journal-tags--query-get-date-list start-date end-date))
         results)
-    (let* ((all-tag-names
-            (if tag-names
-                (seq-uniq (cl-loop for tag-name in tag-names
-                                   unless children collect tag-name
-                                   if children append
-                                   (org-journal-tags--query-get-child-tags
-                                    tag-name)))
-              '("")))
-           (tag-refs (org-journal-tags--query-get-tags-references
-                      all-tag-names dates)))
-      (setq results tag-refs))
+    (setq results (org-journal-tags--query-get-tags-references
+                   (org-journal-tags--query-get-tag-names tag-names children)
+                   dates))
+    (when exclude-tag-names
+      (setq results
+            (org-journal-tags--query-diff-refs
+             results
+             (org-journal-tags--query-get-tags-references
+              (org-journal-tags--query-get-tag-names exclude-tag-names children)
+              dates))))
     (setq results (org-journal-tags--query-merge-refs results))
     (when order
       (setq results
