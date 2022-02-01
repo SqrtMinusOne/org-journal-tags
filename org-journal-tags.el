@@ -664,53 +664,46 @@ If you don't want to turn this on, you can manually call:
 
 ;; Query the DB
 
-(defvar org-journal-tags--files-cache (make-hash-table :test #'equal)
-  "A cache for org-journal files used to speed up queries.
 
-Keys are filenames, values are the correspoinding buffer strings.")
+(defun org-journal-tags--query-construct-dates-hash (refs &optional push-func)
+  "Put REFS in a nested hash table by date and time.
 
-(defun org-journal-tags--cache-invalidate (file-name)
-  "Invalid file contents cache for FILE-NAME."
-  (remhash file-name org-journal-tags--files-cache))
+REFS ia list of `org-journal-tag-reference'.
 
-(defun org-journal-tags-cache-reset ()
-  "Clear the org-journal-tags file contents cache."
-  (interactive)
-  (clrhash org-journal-tags--files-cache))
+PUSH-FUNC is function that receives two arguments: a list of
+references within the same date and time and a new reference to
+be added to the list.
 
-(defun org-journal-tags--extract-ref (ref)
-  "Get a string references by the reference.
+This is the central function in implementing set algebra on
+instances of `org-journal-tag-reference'."
+  (unless push-func
+    (setq push-func
+          (lambda (time-refs ref)
+            (push ref time-refs))))
+  (let ((dates-hash (make-hash-table)))
+    (cl-loop
+     for ref in refs
+     for date = (org-journal-tag-reference-date ref)
+     for time = (org-journal-tag-reference-time ref)
+     do (progn
+          (unless (gethash date dates-hash)
+            (puthash date (make-hash-table :test #'equal) dates-hash))
+          (let ((times-hash (gethash date dates-hash)))
+            (puthash time
+                     (funcall push-func
+                              (gethash time times-hash)
+                              ref)
+                     times-hash))))
+    dates-hash))
 
-REF should be an instance of `org-journal-tag-reference'."
-  (let ((file-name (org-journal--get-entry-path
-                    (org-journal-tag-reference-date ref))))
-    (unless (gethash file-name org-journal-tags--files-cache)
-      (with-temp-buffer
-        (message "Parsing: %s" file-name)
-        (insert-file-contents file-name)
-        (setq org-startup-indented nil)
-        (let ((org-mode-hook nil))
-          (org-mode))
-        (org-journal-tags--ensure-decrypted)
-        (org-font-lock-ensure)
-        (puthash file-name (buffer-string)
-                 org-journal-tags--files-cache)))
-    (string-trim
-     (substring
-      (gethash file-name org-journal-tags--files-cache)
-      (1- (org-journal-tag-reference-ref-start ref))
-      (1- (org-journal-tag-reference-ref-end ref))))))
+(defun org-journal-tags--query-deconstruct-dates-hash (dates-hash)
+  "Deconstruct DATES-HASH to the list of tag references.
 
-(defun org-journal-tags--query-get-child-tags (parent-tag)
-  "Get child org-journal tags for PARENT-TAG.
-
-A tag is considered to be a child of PARENT-TAG if it stars with
-\"<parent-tag-value>.\".  PARENT-TAG itself is also returned."
-  (cl-loop for tag being the hash-keys of (alist-get :tags org-journal-tags-db)
-           if (string-match-p
-               (rx bos (literal parent-tag) (or eos (: "." (* nonl))))
-               tag)
-           collect tag))
+DATES-HASH should be in the same format as returned by
+`org-journal-tags--query-construct-dates-hash'."
+  (cl-loop for times-hash being the hash-values of dates-hash
+           append (cl-loop for refs being the hash-values of times-hash
+                           append refs)))
 
 (defun org-journal-tags--nested-segment-p (a1 a2 b1 b2)
   "Check if segment [B1, B2] is nested in [A1, A2]."
@@ -788,44 +781,6 @@ references."
                         :date (org-journal-tag-reference-date ref))))))
       (append time-refs (list ref))))
 
-
-(defun org-journal-tags--query-construct-dates-hash (refs &optional push-func)
-  "Put REFS in a nested hash table by date and time.
-
-REFS ia list of `org-journal-tag-reference'.
-
-PUSH-FUNC is function that receives two arguments: a list of
-references within the same date and time and a new reference to
-be added to the list."
-  (unless push-func
-    (setq push-func
-          (lambda (time-refs ref)
-            (push ref time-refs))))
-  (let ((dates-hash (make-hash-table)))
-    (cl-loop
-     for ref in refs
-     for date = (org-journal-tag-reference-date ref)
-     for time = (org-journal-tag-reference-time ref)
-     do (progn
-          (unless (gethash date dates-hash)
-            (puthash date (make-hash-table :test #'equal) dates-hash))
-          (let ((times-hash (gethash date dates-hash)))
-            (puthash time
-                     (funcall push-func
-                              (gethash time times-hash)
-                              ref)
-                     times-hash))))
-    dates-hash))
-
-(defun org-journal-tags--query-deconstruct-dates-hash (dates-hash)
-  "Deconstruct DATES-HASH to the list of tag references.
-
-DATES-HASH should be in the same format as returned by
-`org-journal-tags--query-construct-dates-hash'."
-  (cl-loop for times-hash being the hash-values of dates-hash
-           append (cl-loop for refs being the hash-values of times-hash
-                           append refs)))
-
 (defun org-journal-tags--query-merge-refs (refs)
   "Merge intersecting org-journal-tags references.
 
@@ -836,6 +791,16 @@ nested in one another."
    (org-journal-tags--query-construct-dates-hash
     refs
     #'org-journal-tags--query-merge-refs-push)))
+
+(defun org-journal-tags--query-union-refs (refs-1 refs-2)
+  "Return union of REFS-1 and REFS-2.
+
+REFS-1 and REFS-2 are lists of instances of
+`org-journal-tag-reference'."
+  (org-journal-tags--query-merge-refs
+   (append
+    refs-1
+    refs-2)))
 
 (defun org-journal-tags--query-diff-to-one-ref (refs target-ref)
   "Exclude all intersections of TARGET-REF with REFS from TARGET-REF.
@@ -973,6 +938,54 @@ TAG-NAMES is a list of strings, DATES is a list of timestamps."
                     for tag = (gethash tag-name
                                        (alist-get :tags org-journal-tags-db))
                     append (gethash date (org-journal-tag-dates tag)))))
+
+(defun org-journal-tags--query-get-child-tags (parent-tag)
+  "Get child org-journal tags for PARENT-TAG.
+
+A tag is considered to be a child of PARENT-TAG if it stars with
+\"<parent-tag-value>.\".  PARENT-TAG itself is also returned."
+  (cl-loop for tag being the hash-keys of (alist-get :tags org-journal-tags-db)
+           if (string-match-p
+               (rx bos (literal parent-tag) (or eos (: "." (* nonl))))
+               tag)
+           collect tag))
+
+(defvar org-journal-tags--files-cache (make-hash-table :test #'equal)
+  "A cache for org-journal files used to speed up queries.
+
+Keys are filenames, values are the correspoinding buffer strings.")
+
+(defun org-journal-tags--cache-invalidate (file-name)
+  "Invalid file contents cache for FILE-NAME."
+  (remhash file-name org-journal-tags--files-cache))
+
+(defun org-journal-tags-cache-reset ()
+  "Clear the org-journal-tags file contents cache."
+  (interactive)
+  (clrhash org-journal-tags--files-cache))
+
+(defun org-journal-tags--extract-ref (ref)
+  "Get a string references by the reference.
+
+REF should be an instance of `org-journal-tag-reference'."
+  (let ((file-name (org-journal--get-entry-path
+                    (org-journal-tag-reference-date ref))))
+    (unless (gethash file-name org-journal-tags--files-cache)
+      (with-temp-buffer
+        (message "Parsing: %s" file-name)
+        (insert-file-contents file-name)
+        (setq org-startup-indented nil)
+        (let ((org-mode-hook nil))
+          (org-mode))
+        (org-journal-tags--ensure-decrypted)
+        (org-font-lock-ensure)
+        (puthash file-name (buffer-string)
+                 org-journal-tags--files-cache)))
+    (string-trim
+     (substring
+      (gethash file-name org-journal-tags--files-cache)
+      (1- (org-journal-tag-reference-ref-start ref))
+      (1- (org-journal-tag-reference-ref-end ref))))))
 
 (cl-defun org-journal-tags-query (&key tag-names start-date end-date
                                        children order only-refs refs)
