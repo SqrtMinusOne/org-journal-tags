@@ -1083,8 +1083,51 @@ REF should be an instance of `org-journal-tag-reference'."
       (1- (org-journal-tag-reference-ref-start ref))
       (1- (org-journal-tag-reference-ref-end ref))))))
 
+(defun org-journal-tags--string-match-indices (regex string)
+  "Get indices of REGEX matches in STRING."
+  (cl-loop for match = (string-match regex string
+                                     (if match (1+ match) nil))
+           if match collect match into result
+           unless match return result))
+
+(defun org-journal-tags--string-extract-refs (regex ref string)
+  "Extact references from those paragraphs of REF than match REGEX.
+
+STRING is a string, corresponding to REF.  It is split to
+paragraphs by two newline symbols in a row."
+  (let ((paragraphs
+         `(0 ,@(org-journal-tags--string-match-indices "\n\n" string)
+             ,(length string)))
+        (matches (org-journal-tags--string-match-indices regex string)))
+    (cl-loop for i from 0 to (1- (length paragraphs))
+             for start in paragraphs
+             for end = (nth (1+ i) paragraphs)
+             if (cl-loop for match in matches
+                         if (and (<= start match) (<= match end))
+                         return t)
+             collect (org-journal-tag-reference--create
+                      :date (org-journal-tag-reference-date ref)
+                      :time (org-journal-tag-reference-time ref)
+                      :ref-start (+ (org-journal-tag-reference-ref-start ref) start)
+                      :ref-end (+ (org-journal-tag-reference-ref-start ref) end)))))
+
+(defun org-journal-tags--query-filter-refs-by-regex (refs regex &optional narrow)
+  "Filter REFS by REGEX.
+
+REFS is a list of `org-journal-tag-reference', REGEX is regular
+expression.
+
+If NARROW is non-nil, only one paragraph for the every match
+will be returned."
+  (cl-loop for ref in refs
+           for text = (org-journal-tags--extract-ref ref)
+           if (string-match-p regex text)
+           append (if (not narrow)
+                      (list ref)
+                    (org-journal-tags--string-extract-refs regex ref text))))
+
 (cl-defun org-journal-tags-query (&key tag-names exclude-tag-names start-date
-                                       end-date children order only-refs)
+                                       end-date regex regex-narrow children order)
   "Query the org-journal-tags database.
 
 All the keys are optional.
@@ -1094,6 +1137,10 @@ EXCLUDE-TAG-NAMES is a list of string with tag names to exclude.
 
 START-DATE and END-DATE are UNIX timestamps that set the search
 boundaries.
+
+REGEX is a regex by which the references will be filtered.  If
+REGEX-NARROW is non-nil, each found reference will be narrowed
+only to a particular paragraph where match occured.
 
 If CHILDREN is non-nil, also search within all the children of TAG-NAMES.
 
@@ -1115,6 +1162,9 @@ The returned value is a list of `org-journal-tag-reference'."
              (org-journal-tags--query-get-tags-references
               (org-journal-tags--query-get-tag-names exclude-tag-names children)
               dates))))
+    (when regex
+      (setq results (org-journal-tags--query-filter-refs-by-regex
+                     results regex regex-narrow)))
     (setq results (org-journal-tags--query-merge-refs results))
     (when order
       (setq results
