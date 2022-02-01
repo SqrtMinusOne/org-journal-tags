@@ -6,7 +6,7 @@
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0"))
-;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags.el
+;; Homepage: https://github.com/SqrtMinusOne/org-journal-s.el
 
 ;; This file is NOT part of GNU Emacs.
 
@@ -788,25 +788,19 @@ references."
                         :date (org-journal-tag-reference-date ref))))))
       (append time-refs (list ref))))
 
-(defun org-journal-tags--query-compare-refs (ref-1 ref-2)
-  "Compare date and time of REF-1 and REF-2.
 
-If dates of REF-1 and REF-2 are equal, return t if REF-1 has
-lesser time.  Otherwise, return t if REF-1 has greater date (or
-lesser date if `org-journal-tags-query-ascending-sort' is
-non-nil)"
-  (let ((date-1 (org-journal-tag-reference-date ref-1))
-        (date-2 (org-journal-tag-reference-date ref-2)))
-    (if (= date-1 date-2)
-        (string-lessp (org-journal-tag-reference-time ref-1)
-                      (org-journal-tag-reference-time ref-2))
-      (funcall (if org-journal-tags-query-ascending-sort #'<= #'>=)
-               date-1 date-2))))
+(defun org-journal-tags--query-construct-dates-hash (refs &optional push-func)
+  "Put REFS in a nested hash table by date and time.
 
-(defun org-journal-tags--query-merge-refs (refs)
-  "Merge and sort intersecting and nested org-journal-tags refs.
+REFS ia list of `org-journal-tag-reference'.
 
-REFS is a list of instances of `org-journal-tag-reference'."
+PUSH-FUNC is function that receives two arguments: a list of
+references within the same date and time and a new reference to
+be added to the list."
+  (unless push-func
+    (setq push-func
+          (lambda (time-refs ref)
+            (push ref time-refs))))
   (let ((dates-hash (make-hash-table)))
     (cl-loop
      for ref in refs
@@ -816,20 +810,175 @@ REFS is a list of instances of `org-journal-tag-reference'."
           (unless (gethash date dates-hash)
             (puthash date (make-hash-table :test #'equal) dates-hash))
           (let ((times-hash (gethash date dates-hash)))
-            (if (not (gethash time times-hash))
-                (puthash time (list ref) times-hash)
-              (puthash time
-                       (org-journal-tags--query-merge-refs-push
-                        (gethash time times-hash) ref)
-                       times-hash)))))
-    (seq-sort
-     #'org-journal-tags--query-compare-refs
-     (cl-loop for times-hash being the hash-values of dates-hash
-              append (cl-loop for refs being the hash-values of times-hash
-                              append refs)))))
+            (puthash time
+                     (funcall push-func
+                              (gethash time times-hash)
+                              ref)
+                     times-hash))))
+    dates-hash))
 
-(cl-defun org-journal-tags-query (&key tag-names start-date end-date children only-refs)
+(defun org-journal-tags--query-deconstruct-dates-hash (dates-hash)
+  "Deconstruct DATES-HASH to the list of tag references.
+
+DATES-HASH should be in the same format as returned by
+`org-journal-tags--query-construct-dates-hash'."
+  (cl-loop for times-hash being the hash-values of dates-hash
+           append (cl-loop for refs being the hash-values of times-hash
+                           append refs)))
+
+(defun org-journal-tags--query-merge-refs (refs)
+  "Merge intersecting org-journal-tags references.
+
+REFS is a list of instances of `org-journal-tag-reference'.
+After this function, no two references will be intersecting or
+nested in one another."
+  (org-journal-tags--query-deconstruct-dates-hash
+   (org-journal-tags--query-construct-dates-hash
+    refs
+    #'org-journal-tags--query-merge-refs-push)))
+
+(defun org-journal-tags--query-diff-to-one-ref (refs target-ref)
+  "Exclude all intersections of TARGET-REF with REFS from TARGET-REF.
+
+REFS is a list of `org-journal-tag-reference', TARGET-REF is one
+instance of `org-journal-tag-reference'.  All referneces are
+assumed to have one date and time.
+
+The return value is a list of `org-journal-tag-reference'.  The
+list may be empty (if TARGET-REF is nested in one of REFS, for
+instance), it may be multiple references (if some reference in
+REFS splits TARGET-REF in two) or it may be one reference."
+  (let ((result (list target-ref))
+        (date (org-journal-tag-reference-date target-ref))
+        (time (org-journal-tag-reference-time target-ref)))
+    (dolist (ref-2 refs)
+      ;; A shallow copy because we're modifying RESULT
+      (dolist (ref-1 (seq-copy result))
+        ;; [start-1, end-1] is what we're trying to insert
+        ;; [start-2, end-2] is a segment from REFS that shouldn't
+        ;; overlap with the former
+        (let ((start-1 (org-journal-tag-reference-ref-start ref-1))
+              (end-1 (org-journal-tag-reference-ref-end ref-1))
+              (start-2 (org-journal-tag-reference-ref-start ref-2))
+              (end-2 (org-journal-tag-reference-ref-end ref-2)))
+          (cond
+           ;; If [start-1, end-1] is nested in [start-2, end-2], remove
+           ;; the first segment altogether
+           ((org-journal-tags--nested-segment-p
+             start-2 end-2
+             start-1 end-1)
+            (setq result (seq-filter (lambda (r) (not (eq r ref-1))) result)))
+           ;; If [start-2, end-2] is nested in [start-1, end-1], split
+           ;; the first segment in two.  This excludes equality of the
+           ;; segments because of the previous condition.
+           ((org-journal-tags--nested-segment-p
+             start-1 end-1
+             start-2 end-2)
+            (setq result
+                  (append
+                   (seq-filter (lambda (r) (not (eq r ref-1))) result)
+                   (list
+                    (org-journal-tag-reference--create
+                     :ref-start start-1 :ref-end start-2
+                     :date date :time time)
+                    (org-journal-tag-reference--create
+                     :ref-start end-2 :ref-end end-1
+                     :date date :time time)))))
+           ;; start-1 <= start-2 <= end-1
+           ;; The segment [start-2, end-1] is overlapping
+           ((and (<= start-1 start-2) (<= start-2 end-1))
+            (setq result
+                  (append
+                   (seq-filter (lambda (r) (not (eq r ref-1))) result)
+                   (list
+                    (org-journal-tag-reference--create
+                     :ref-start start-1 :ref-end start-2
+                     :date date :time time)))))
+           ;; start-2 <= start-1 <= end-2
+           ;; The segment [start-1, end-2] is overlapping
+           ((and (<= start-2 start-1) (<= start-1 end-2))
+            (setq result
+                  (append
+                   (seq-filter (lambda (r) (not (eq r ref-1))) result)
+                   (list
+                    (org-journal-tag-reference--create
+                     :ref-start end-2 :ref-end end-1
+                     :date date :time time)))))
+           ;; Do nothing if there are no overlaps
+           ))))
+    result))
+
+(defun org-journal-tags--query-diff-refs (refs-1 refs-2)
+  "Remove all intersections between REFS-1 and REFS-2 from REFS-1.
+
+REFS-1 and REFS-2 are lists of instances of
+`org-journal-tag-reference'."
+  (let ((dates-hash-2 (org-journal-tags--query-construct-dates-hash refs-2)))
+    (org-journal-tags--query-deconstruct-dates-hash
+     (org-journal-tags--query-construct-dates-hash
+      refs-1
+      (lambda (times-refs-1 ref-1)
+        (let ((date (org-journal-tag-reference-date ref-1))
+              (time (org-journal-tag-reference-time ref-1)))
+          (if-let* ((times-hash-2 (gethash date dates-hash-2))
+                    (times-refs-2 (gethash time times-hash-2)))
+              (append
+               times-refs-1
+               (org-journal-tags--query-diff-to-one-ref times-refs-2 ref-1))
+            (push ref-1 time-refs-1))))))))
+
+(defun org-journal-tags--query-sort-refs (refs &optional ascending)
+  "Sort REFS by date and time.
+
+REFS is a list of `org-journal-tag-reference'.
+
+If ASCENDING is non-nil, do ascending sort on dates (i.e. the
+earliest date comes first.).  Times are always sorted ascending."
+  (seq-sort
+   (lambda (ref-1 ref-2)
+     (let ((date-1 (org-journal-tag-reference-date ref-1))
+           (date-2 (org-journal-tag-reference-date ref-2)))
+       (if (= date-1 date-2)
+           (string-lessp (org-journal-tag-reference-time ref-1)
+                         (org-journal-tag-reference-time ref-2))
+         (funcall (if ascending #'<= #'>=)
+                  date-1 date-2))))
+   refs))
+
+(defun org-journal-tags--query-get-date-list (start-date end-date)
+  "List all the dates for records.
+
+As everywhere in org-journal-tags, dates are returned in UNIX
+timestamp format.
+
+START-DATE and END-DATE are used to trim the range of the
+returned dates from both ends."
+  (thread-last
+    (org-journal--list-dates)
+    (mapcar (lambda (date)
+              (time-convert
+               (org-journal-tags--parse-journal-date date)
+               'integer)))
+    (seq-filter
+     (lambda (date)
+       (and (or (null start-date) (>= date start-date))
+            (or (null end-date) (<= date end-date)))))))
+
+(defun org-journal-tags--query-get-tags-references (tag-names dates)
+  "Return all the references to required tags from the db.
+
+TAG-NAMES is a list of strings, DATES is a list of timestamps."
+  (cl-loop for date in dates append
+           (cl-loop for tag-name in tag-names
+                    for tag = (gethash tag-name
+                                       (alist-get :tags org-journal-tags-db))
+                    append (gethash date (org-journal-tag-dates tag)))))
+
+(cl-defun org-journal-tags-query (&key tag-names start-date end-date
+                                       children order only-refs refs)
   "Query the org-journal-tags database.
+
+All the keys are optional.
 
 TAG-NAMES is a list of strings with tag names.
 
@@ -838,43 +987,45 @@ boundaries.
 
 If CHILDREN is non-nil, also search within all the children of TAG-NAMES.
 
+If ORDER is 'ascending, the references list will be sorted in
+ascending order.  If ORDER is anything else except nil, the order
+will be descending.
+
 If ONLY-REFS is nil, the returned value is a list of alists with
 following keys:
 - `:ref' is an instance of `org-journal-tag-reference'
 - `:string' is the referenced string.
 Otherwise the returned value is a list of `org-journal-tag-reference'."
   (org-journal-tags-db-ensure)
-  (when-let ((dates (thread-last
-                      (org-journal--list-dates)
-                      (mapcar (lambda (date)
-                                (time-convert
-                                 (org-journal-tags--parse-journal-date date)
-                                 'integer)))
-                      (seq-filter
-                       (lambda (date)
-                         (and (or (null start-date) (>= date start-date))
-                              (or (null end-date) (<= date end-date)))))))
-             (all-tag-names (if tag-names
-                                (seq-uniq
-                                 (cl-loop for tag-name in tag-names
-                                          unless children collect tag-name
-                                          if children append
-                                          (org-journal-tags--query-get-child-tags
-                                           tag-name)))
-                              '("")))
-             (refs (org-journal-tags--query-merge-refs
-                    (cl-loop
-                     for date in dates append
-                     (cl-loop
-                      for tag-name in all-tag-names
-                      for tag = (gethash tag-name
-                                         (alist-get :tags org-journal-tags-db))
-                      append (gethash date (org-journal-tag-dates tag)))))))
-    (mapcar (lambda (ref)
-              (if only-refs
-                  ref
-                `((:ref . ,ref) (:string . ,(org-journal-tags--extract-ref ref)))))
-            refs)))
+  (let ((dates (org-journal-tags--query-get-date-list start-date end-date))
+        results)
+    (when refs
+      (setq results refs))
+    (let* ((all-tag-names
+            (if tag-names
+                (seq-uniq (cl-loop for tag-name in tag-names
+                                   unless children collect tag-name
+                                   if children append
+                                   (org-journal-tags--query-get-child-tags
+                                    tag-name)))
+              '("")))
+           (tag-refs (org-journal-tags--query-get-tags-references
+                      all-tag-names dates)))
+      (if results
+          (user-error "Intersection is not yet implemented")
+        (setq results tag-refs)))
+    (setq results (org-journal-tags--query-merge-refs results))
+    (when order
+      (setq results
+            (org-journal-tags--query-sort-refs
+             results (eq order 'ascending))))
+    (unless only-refs
+      (setq results
+            (mapcar (lambda (ref)
+                      `((:ref . ,ref)
+                        (:string . ,(org-journal-tags--extract-ref ref))))
+                    results)))
+    results))
 
 
 ;; View
