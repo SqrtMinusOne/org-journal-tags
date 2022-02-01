@@ -664,8 +664,7 @@ If you don't want to turn this on, you can manually call:
 
 ;; Query the DB
 
-
-(defun org-journal-tags--query-construct-dates-hash (refs &optional push-func)
+(defun org-journal-tags--query-construct-dates-hash (refs &optional push-func check-func)
   "Put REFS in a nested hash table by date and time.
 
 REFS ia list of `org-journal-tag-reference'.
@@ -673,6 +672,9 @@ REFS ia list of `org-journal-tag-reference'.
 PUSH-FUNC is function that receives two arguments: a list of
 references within the same date and time and a new reference to
 be added to the list.
+
+CHECK-FUNC is a function that receives two arguments - date and
+time - and determines if they are to put in hash.
 
 This is the central function in implementing set algebra on
 instances of `org-journal-tag-reference'."
@@ -685,6 +687,7 @@ instances of `org-journal-tag-reference'."
      for ref in refs
      for date = (org-journal-tag-reference-date ref)
      for time = (org-journal-tag-reference-time ref)
+     if (or (not check-func) (funcall check-func date time))
      do (progn
           (unless (gethash date dates-hash)
             (puthash date (make-hash-table :test #'equal) dates-hash))
@@ -882,15 +885,85 @@ REFS-1 and REFS-2 are lists of instances of
     (org-journal-tags--query-deconstruct-dates-hash
      (org-journal-tags--query-construct-dates-hash
       refs-1
-      (lambda (times-refs-1 ref-1)
+      (lambda (time-refs-1 ref-1)
         (let ((date (org-journal-tag-reference-date ref-1))
               (time (org-journal-tag-reference-time ref-1)))
           (if-let* ((times-hash-2 (gethash date dates-hash-2))
-                    (times-refs-2 (gethash time times-hash-2)))
+                    (time-refs-2 (gethash time times-hash-2)))
               (append
-               times-refs-1
-               (org-journal-tags--query-diff-to-one-ref times-refs-2 ref-1))
+               time-refs-1
+               (org-journal-tags--query-diff-to-one-ref time-refs-2 ref-1))
             (push ref-1 time-refs-1))))))))
+
+(defun org-journal-tags--query-intersect-to-one-ref (refs ref-1)
+  "Return parts of REFS that intersect with REF-1.
+
+REFS is a list org `org-journal-tag-reference', REF-1 is one `org-journal-tag-reference'.
+
+The return value is a list of `org-journal-tag-reference'."
+  (let ((date (org-journal-tag-reference-date ref-1))
+        (time (org-journal-tag-reference-time ref-1))
+        result)
+    (dolist (ref-2 refs)
+      (let ((start-1 (org-journal-tag-reference-ref-start ref-1))
+            (end-1 (org-journal-tag-reference-ref-end ref-1))
+            (start-2 (org-journal-tag-reference-ref-start ref-2))
+            (end-2 (org-journal-tag-reference-ref-end ref-2)))
+        (cond
+         ;; If one segment is nested in another, save the intersection
+         ((or (org-journal-tags--nested-segment-p
+               start-1 end-1 start-2 end-2)
+              (org-journal-tags--nested-segment-p
+               start-2 end-2 start-1 end-1))
+          (setq result
+                ;; Because there will be intersections otherwise
+                (org-journal-tags--query-merge-refs-push
+                 result
+                 (org-journal-tag-reference--create
+                  :time time :date date
+                  :ref-start (max start-1 start-2)
+                  :ref-end (min end-1 end-2)))))
+         ;; start-1 <= start-2 <= end-1
+         ;; The segment [start-2, end-1] is overlapping
+         ((and (<= start-1 start-2) (<= start-2 end-1))
+          (setq result
+                (org-journal-tags--query-merge-refs-push
+                 result
+                 (org-journal-tag-reference--create
+                  :ref-start start-2 :ref-end end-1
+                  :date date :time time))))
+         ;; start-2 <= start-1 <= end-2
+         ;; The segment [start-1, end-2] is overlapping
+         ((and (<= start-2 start-1) (<= start-1 end-2))
+          (setq result
+                (org-journal-tags--query-merge-refs-push
+                 (org-journal-tag-reference--create
+                  :ref-start start-1 :ref-end end-2
+                  :date date :time time))))
+         ;; Do nothing if there are no overlaps
+         )))
+    result))
+
+(defun org-journal-tags--query-intersect-refs (refs-1 refs-2)
+  "Return intersections between REFS-1 and REFS-2.
+
+REFS-1 and REFS-2 are lists of `org-journal-tag-reference'."
+  (let ((dates-hash-2 (org-journal-tags--query-construct-dates-hash refs-2)))
+    (org-journal-tags--query-deconstruct-dates-hash
+     (org-journal-tags--query-construct-dates-hash
+      refs-1
+      (lambda (time-refs-1 ref-1)
+        (let* ((date (org-journal-tag-reference-date ref-1))
+               (time (org-journal-tag-reference-time ref-1))
+               (time-refs-2 (gethash time (gethash date dates-hash-2))))
+          (append
+           time-refs-1
+           (org-journal-tags--query-intersect-to-one-ref
+            time-refs-2
+            ref-1))))
+      (lambda (date-1 time-1)
+        (when-let ((times-hash-2 (gethash date-1 dates-hash-2)))
+          (gethash time-1 times-hash-2)))))))
 
 (defun org-journal-tags--query-sort-refs (refs &optional ascending)
   "Sort REFS by date and time.
@@ -1012,8 +1085,6 @@ Otherwise the returned value is a list of `org-journal-tag-reference'."
   (org-journal-tags-db-ensure)
   (let ((dates (org-journal-tags--query-get-date-list start-date end-date))
         results)
-    (when refs
-      (setq results refs))
     (let* ((all-tag-names
             (if tag-names
                 (seq-uniq (cl-loop for tag-name in tag-names
@@ -1024,9 +1095,7 @@ Otherwise the returned value is a list of `org-journal-tag-reference'."
               '("")))
            (tag-refs (org-journal-tags--query-get-tags-references
                       all-tag-names dates)))
-      (if results
-          (user-error "Intersection is not yet implemented")
-        (setq results tag-refs)))
+      (setq results tag-refs))
     (setq results (org-journal-tags--query-merge-refs results))
     (when order
       (setq results
