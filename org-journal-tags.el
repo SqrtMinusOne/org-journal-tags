@@ -5,7 +5,7 @@
 ;; Author: Korytov Pavel <thexcloud@gmail.com>
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0"))
+;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0") (transient "0.3.7"))
 ;; Homepage: https://github.com/SqrtMinusOne/org-journal-s.el
 
 ;; This file is NOT part of GNU Emacs.
@@ -29,11 +29,12 @@
 
 ;;; Code:
 (require 'cl-lib)
-(require 'seq)
 (require 'crm)
 (require 'magit-section)
 (require 'org-journal)
 (require 'org-macs)
+(require 'seq)
+(require 'transient)
 
 (defgroup org-journal-tags ()
   "Manage tags for org-journal."
@@ -104,6 +105,9 @@ Used by `org-journal-tags-insert-tag' and
   "If t, do ascending sort for the query results."
   :type 'boolean
   :group 'org-journal-tags)
+
+(defconst org-journal-tags-query-buffer-name org-journal-tags-query-buffer-name
+  "Default buffer name for org-journal-tags quieries")
 
 (defun org-journal-tags--format-new-tag-default (tag)
   "Default formatting function for new org journal tags.
@@ -1234,12 +1238,14 @@ The returned value is a list of `org-journal-tag-reference'."
     (switch-to-buffer-other-window buffer)))
 
 (defclass org-journal-tags-date-section (magit-section)
-  (()))
+  ((date :initform nil)))
 
 (defclass org-journal-tags-time-section (magit-section)
-  (()))
+  ((ref :initform nil)))
 
 (defvar-local org-journal-tags--query-refs nil)
+
+(defvar-local org-journal-tags--query-params nil)
 
 (defvar org-journal-tags-query-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1275,20 +1281,257 @@ The returned value is a list of `org-journal-tag-reference'."
                        (format "%s\n")
                        ((lambda (s) (propertize s 'face 'magit-section-heading)))
                        insert)
+          (oset section date (car date-refs))
           (magit-insert-heading)
           (dolist (ref (cdr date-refs))
-            (magit-insert-section (org-journal-tags-time-section)
+            (magit-insert-section section (org-journal-tags-time-section)
               (thread-last
                 ref
                 org-journal-tag-reference-time
                 (format "%s\n")
                 ((lambda (s) (propertize s 'face 'magit-section-secondary-heading)))
                 insert)
+              (oset section ref ref)
               (magit-insert-heading)
               (insert (org-journal-tags--extract-ref ref))
               (insert "\n"))))))
     (goto-char (point-min))
     (magit-section-show-level-2-all)))
+
+
+;; Query transient
+
+(defclass org-journal-tags--transient-variable (transient-variable)
+  ((transient :initform 'transient--do-call)))
+
+(defclass org-journal-tags--transient-switch-with-variable (transient-switch)
+  ((variable :initarg :variable)))
+
+(cl-defmethod transient-init-value ((obj org-journal-tags--transient-variable))
+  (if (bound-and-true-p org-journal-tags--query-params)
+      (oset obj value
+            (alist-get (oref obj variable) org-journal-tags--query-params))
+    (oset obj value nil)))
+
+(cl-defmethod transient-init-value ((obj org-journal-tags--transient-switch-with-variable))
+  (if (bound-and-true-p org-journal-tags--query-params)
+      (oset obj value
+            (alist-get (oref obj variable) org-journal-tags--query-params))
+    (oset obj value nil)))
+
+(cl-defmethod transient-infix-value ((obj org-journal-tags--transient-variable))
+  (slot-value obj 'value))
+
+(cl-defmethod transient-format-value ((obj org-journal-tags--transient-variable))
+  (let ((value (if (slot-boundp obj 'value) (slot-value obj 'value) nil)))
+    (if value
+        (propertize
+         (prin1-to-string value)
+         'face 'transient-value)
+      (propertize "unset" 'face 'transient-inactive-value))))
+
+(defclass org-journal-tags--transient-tags (org-journal-tags--transient-variable)
+  ((reader :initform #'org-journal-tags--transient-tags-reader)))
+
+(defun org-journal-tags--transient-tags-reader (prompt initial-input _history)
+  (let ((crm-separator " ")
+        (crm-local-completion-map
+         (let ((map (make-sparse-keymap)))
+           (set-keymap-parent map crm-local-completion-map)
+           (define-key map " " 'self-insert-command)
+           map)))
+    (completing-read-multiple
+     prompt (org-journal-tags--list-tags) nil nil initial-input)))
+
+(cl-defmethod transient-format-value ((obj org-journal-tags--transient-tags))
+  (let ((value (if (slot-boundp obj 'value) (slot-value obj 'value) nil)))
+    (if value
+        (propertize
+         (string-join value " ")
+         'face 'transient-value)
+      (propertize "unset" 'face 'transient-inactive-value))))
+
+(defclass org-journal-tags--transient-date (org-journal-tags--transient-variable)
+  ((reader :initform #'org-journal-tags--transient-date-reader)))
+
+(defun org-journal-tags--transient-date-reader (prompt initial-input _history)
+  (time-convert
+   (org-read-date nil t nil prompt)
+   'integer))
+
+(cl-defmethod transient-format-value ((obj org-journal-tags--transient-date))
+  (let ((value (if (slot-boundp obj 'value) (slot-value obj 'value) nil)))
+    (if value
+        (propertize
+         (format-time-string
+          org-journal-date-format
+          (seconds-to-time
+           value))
+         'face 'transient-value)
+      (propertize "unset" 'face 'transient-inactive-value))))
+
+(defclass org-journal-tags--transient-regex (org-journal-tags--transient-variable)
+  ((reader :initform #'org-journal-tags--transient-regex-reader)))
+
+(defun org-journal-tags--transient-regex-reader (prompt initial-input _history)
+  (read-from-minibuffer prompt initial-input))
+
+(cl-defmethod transient-format-value ((obj org-journal-tags--transient-regex))
+  (let ((value (if (slot-boundp obj 'value) (slot-value obj 'value) nil)))
+    (if (stringp value)
+        (propertize
+         value
+         'face 'transient-value)
+      (propertize "unset" 'face 'transient-inactive-value))))
+
+(transient-define-infix org-journal-tags--transient-include-tags ()
+  :class 'org-journal-tags--transient-tags
+  :variable :tag-names
+  :description "Include tags"
+  :prompt "Include tag names: ")
+
+(transient-define-infix org-journal-tags--transient-exclude-tags ()
+  :class 'org-journal-tags--transient-tags
+  :variable :exclude-tag-names
+  :description "Exclude tags"
+  :prompt "Exclude tag names: ")
+
+(transient-define-infix org-journal-tags--transient-children ()
+  :class 'org-journal-tags--transient-switch-with-variable
+  :description "Include child tags"
+  :argument "--children"
+  :variable :children)
+
+(transient-define-infix org-journal-tags--transient-start-date ()
+  :class 'org-journal-tags--transient-date
+  :variable :start-date
+  :description "Start date"
+  :prompt "Start date: ")
+
+(transient-define-infix org-journal-tags--transient-end-date ()
+  :class 'org-journal-tags--transient-date
+  :variable :end-date
+  :description "End date"
+  :prompt "End date: ")
+
+(transient-define-infix org-journal-tags--transient-regex-search ()
+  :class 'org-journal-tags--transient-regex
+  :variable :regex
+  :description "Regex"
+  :prompt "Search by regular expression: ")
+
+(transient-define-infix org-journal-tags--transient-regex-narrow ()
+  :class 'org-journal-tags--transient-switch-with-variable
+  :description "Narrow to regex"
+  :argument "--regex-narrow"
+  :variable :regex-narrow)
+
+(transient-define-infix org-journal-tags--transient-order ()
+  :class 'org-journal-tags--transient-switch-with-variable
+  :description "Sort"
+  :argument "--ascending"
+  :variable :order)
+
+(defun org-journal-tags--transient-extract-values ()
+  "Return (variable . value) alist for the current transient."
+  (cl-loop for suffix in (transient-suffixes transient-current-command)
+           if (and (slot-exists-p suffix 'variable) (slot-exists-p suffix 'value))
+           collect (cons (slot-value suffix 'variable) (slot-value suffix 'value))))
+
+(defun org-journal-tags--transient-values-to-params (values)
+  "Make a plist acceptable to `org-journal-tags-query'.
+
+VALUES should be an alist of transient values."
+  (let ((params (cl--alist-to-plist values)))
+    (setq params
+          (if (plist-get params :order)
+              (plist-put params :order 'ascending)
+            (plist-put params :order 'descending)))))
+
+(defmacro org-journal-tags--render-query-refs (&rest body)
+  `(let* ((params (org-journal-tags--transient-extract-values))
+          (refs (apply #'org-journal-tags-query
+                       (org-journal-tags--transient-values-to-params params))))
+     (with-current-buffer (get-buffer-create org-journal-tags-query-buffer-name)
+       (org-journal-tags--buffer-render-query
+        (progn
+          ,@body))
+       (setq-local org-journal-tags--query-params params))
+     (unless (string-equal (buffer-name (current-buffer))
+                           org-journal-tags-query-buffer-name)
+       (switch-to-buffer-other-window org-journal-tags-query-buffer-name))))
+
+(transient-define-suffix org-journal-tags--transient-exec-new-query ()
+  :description "Run query"
+  (interactive)
+  (org-journal-tags--render-query-refs refs))
+
+(transient-define-suffix org-journal-tags--transient-query-intersection ()
+  :description "Intersection"
+  (interactive)
+  (org-journal-tags--render-query-refs
+   (org-journal-tags--query-intersect-refs
+    org-journal-tags--query-refs
+    refs)))
+
+(transient-define-suffix org-journal-tags--transient-query-union ()
+  :description "Union"
+  (interactive)
+  (org-journal-tags--render-query-refs
+   (org-journal-tags--query-union-refs
+    org-journal-tags--query-refs
+    refs)))
+
+(transient-define-suffix org-journal-tags--transient-query-diff-from ()
+  :description "Difference from current"
+  (interactive)
+  (org-journal-tags--render-query-refs
+   (org-journal-tags--query-diff-refs
+    org-journal-tags--query-refs
+    refs)))
+
+(transient-define-suffix org-journal-tags--transient-query-diff-to ()
+  :description "Difference to current"
+  (interactive)
+  (org-journal-tags--render-query-refs
+   (org-journal-tags--query-diff-refs
+    refs
+    org-journal-tags--query-refs)))
+
+(transient-define-suffix org-journal-tags--transient-reset ()
+  :description "Reset query"
+  :transient t
+  (interactive)
+  (cl-loop for suffix in (transient-suffixes transient-current-command)
+           if (slot-exists-p suffix 'value)
+           collect (oset suffix value nil)))
+
+(transient-define-prefix org-journal-tags-transient-query ()
+  "Query"
+  ["Tags"
+   ("ti" org-journal-tags--transient-include-tags)
+   ("te" org-journal-tags--transient-exclude-tags)
+   ("tc" org-journal-tags--transient-children)]
+  ["Date"
+   ("ds" org-journal-tags--transient-start-date)
+   ("de" org-journal-tags--transient-end-date)]
+  ["Regex"
+   ("rr" org-journal-tags--transient-regex-search)
+   ("rn" org-journal-tags--transient-regex-narrow)]
+  ["Order"
+   ("o" org-journal-tags--transient-order)]
+  ["Modify the current results"
+   :class transient-row
+   :if-mode org-journal-tags-query-mode
+   ("mu" org-journal-tags--transient-query-union)
+   ("mi" org-journal-tags--transient-query-intersection)
+   ("md" org-journal-tags--transient-query-diff-from)
+   ("mt" org-journal-tags--transient-query-diff-to)]
+  ["Actions"
+   :class transient-row
+   ("e" org-journal-tags--transient-exec-new-query)
+   ("Q" org-journal-tags--transient-reset)
+   ("q" "Quit" transient-quit-one)])
 
 (provide 'org-journal-tags)
 ;;; org-journal-tags.el ends here
