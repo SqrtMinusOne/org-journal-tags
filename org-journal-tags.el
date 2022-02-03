@@ -73,7 +73,17 @@ The database is stored in the file, path to which is set by
 
 (defface org-journal-tags-info-face
   '((t (:inherit success)))
-  "A face to higlight various information."
+  "A face to highlight various information."
+  :group 'org-journal-tags)
+
+(defface org-journal-tags-date-header
+  '((t (:inherit magit-section-heading)))
+  "A face for date headings in the query result buffer."
+  :group 'org-journal-tags)
+
+(defface org-journal-tags-time-header
+  '((t (:inherit magit-section-secondary-heading)))
+  "A face for time headings in the query result buffer."
   :group 'org-journal-tags)
 
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
@@ -106,7 +116,26 @@ Used by `org-journal-tags-insert-tag' and
   :type 'boolean
   :group 'org-journal-tags)
 
-(defconst org-journal-tags-query-buffer-name org-journal-tags-query-buffer-name
+(defcustom org-journal-tags-barchart-symbols
+  '(" " "▁" "▂" "▃" "▄" "▅" "▆" "▇")
+  "Symbols to draw a horizontal barchart."
+  :type 'list
+  :group 'org-journal-tags)
+
+(defface org-journal-tags-barchar-face
+  '((t (:inherit warning)))
+  "A face to plot a horizontal barchar."
+  :group 'org-journal-tags)
+
+(defcustom org-journal-tags-date-group-func #'org-journal-tags--group-date-default
+  "A function to group dates in barchart and elsewhere.
+
+Take a loot at `org-journal-tags--group-refs-by-date' for more
+detail."
+  :type 'function
+  :group 'org-journal-tags)
+
+(defconst org-journal-tags-query-buffer-name "*org-journal-query*"
   "Default buffer name for org-journal-tags quieries")
 
 (defun org-journal-tags--format-new-tag-default (tag)
@@ -116,10 +145,16 @@ TAG is a string with the tag name."
   (format "[[org-journal:%s][#%s]]" tag tag))
 
 (defun org-journal-tags--face-default (&rest _)
-  "A function to return the default tag face.
+  "Return the default tag face.
 
 TAG is a string with the tag name."
   'org-journal-tags-tag-face)
+
+(defun org-journal-tags--group-date-default (date)
+  "Return year and week of DATE.
+
+DATE is a UNIX timestamp."
+  (format-time-string "%Y-%W" (seconds-to-time date)))
 
 
 ;; Data model and database
@@ -1176,6 +1211,45 @@ The returned value is a list of `org-journal-tag-reference'."
              results (eq order 'ascending))))
     results))
 
+(defun org-journal-tags--group-refs-by-date (refs &optional max-length)
+  "Group REFS by date.
+
+REFS is a list of `org-journal-tag-reference'.
+
+Grouping is done with `org-journal-tags-date-group-func'.  The
+function should receive a date and return the string name of the
+group."
+  (let ((start-date (org-journal-tag-reference-date (nth 0 refs)))
+        (end-date (org-journal-tag-reference-date (car (last refs)))))
+    (when (> start-date end-date)
+      (setq start-date end-date)
+      (setq end-date (org-journal-tag-reference-date (nth 0 refs))))
+    (let* ((dates-list (seq-group-by
+                        org-journal-tags-date-group-func
+                        (cl-loop for date from start-date to end-date by (* 60 60 24)
+                                 collect date)))
+           (dates-hash (make-hash-table :test #'equal)))
+      (cl-loop for ref in refs
+               for date-group = (funcall org-journal-tags-date-group-func
+                                         (org-journal-tag-reference-date ref))
+               do (puthash date-group
+                           (push ref (gethash date-group dates-hash))
+                           dates-hash))
+      (let ((result (cl-loop for group in dates-list
+                             for date-group = (car group)
+                             for dates = (cdr group)
+                             for refs = (gethash date-group dates-hash)
+                             collect `(,date-group . ((:dates . ,dates) (:refs . ,refs))))))
+        (while (and max-length (> (length result) max-length))
+          (setq result
+                (cl-loop for (a b) on result by #'cddr
+                         collect
+                         `(,(car a)
+                           . ((:dates . ,(append (alist-get :dates (cdr a))
+                                                 (alist-get :dates (cdr b))))
+                              (:refs . ,(append (alist-get :refs (cdr a))
+                                                (alist-get :refs (cdr b)))))))))
+        result))))
 
 ;; View
 
@@ -1262,6 +1336,21 @@ The returned value is a list of `org-journal-tag-reference'."
 (define-derived-mode org-journal-tags-query-mode magit-section "Org Journal Tags Query"
   "TODO")
 
+(defun org-journal-tags--buffer-render-horizontal-barchart (refs)
+  "Render a horizonal barchar for REFS at point."
+  (let* ((data (mapcar
+                (lambda (group) (length (alist-get :refs (cdr group))))
+                (org-journal-tags--group-refs-by-date refs (1- (window-body-width)))))
+         (max-datum (seq-max data))
+         (max-symbol-index (length org-journal-tags-barchart-symbols)))
+    (insert
+     (propertize
+      (cl-loop for datum in data
+               for symbol-index = (floor (* datum
+                                            (/ (float max-symbol-index) max-datum)))
+               concat (nth symbol-index org-journal-tags-barchart-symbols))
+      'face 'org-journal-tags-barchar-face))))
+
 (defun org-journal-tags--buffer-render-query (refs)
   (let ((inhibit-read-only t))
     (erase-buffer)
@@ -1269,6 +1358,17 @@ The returned value is a list of `org-journal-tag-reference'."
     (unless (eq major-mode 'org-journal-tags-query-mode)
       (org-journal-tags-query-mode))
     (magit-insert-section (org-journal-tags-query)
+      (insert (concat
+               "Found results: "
+               (propertize (number-to-string (length refs))
+                           'face 'org-journal-tags-info-face)
+               "\n"))
+      (magit-insert-section (org-journal-tags-query-barchart nil t)
+        (org-journal-tags--buffer-render-horizontal-barchart refs)
+        (magit-insert-heading)
+        (insert "\n")
+        (insert "kek\n"))
+      (insert "\n")
       (dolist (date-refs
                (seq-group-by
                 #'org-journal-tag-reference-date
@@ -1279,24 +1379,25 @@ The returned value is a list of `org-journal-tag-reference'."
                        seconds-to-time
                        (format-time-string org-journal-date-format)
                        (format "%s\n")
-                       ((lambda (s) (propertize s 'face 'magit-section-heading)))
+                       ((lambda (s)
+                          (propertize s 'face 'org-journal-tags-date-header)))
                        insert)
           (oset section date (car date-refs))
           (magit-insert-heading)
           (dolist (ref (cdr date-refs))
-            (magit-insert-section section (org-journal-tags-time-section)
+            (magit-insert-section section (org-journal-tags-time-section nil t)
               (thread-last
                 ref
                 org-journal-tag-reference-time
                 (format "%s\n")
-                ((lambda (s) (propertize s 'face 'magit-section-secondary-heading)))
+                ((lambda (s)
+                   (propertize s 'face 'org-journal-tags-time-header)))
                 insert)
               (oset section ref ref)
               (magit-insert-heading)
               (insert (org-journal-tags--extract-ref ref))
               (insert "\n"))))))
-    (goto-char (point-min))
-    (magit-section-show-level-2-all)))
+    (goto-char (point-min))))
 
 
 ;; Query transient
