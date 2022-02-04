@@ -31,11 +31,11 @@
 (require 'cl-lib)
 (require 'crm)
 (require 'magit-section)
-(require 'org)
-(require 'subr-x)
+(require 'org-element)
 (require 'org-journal)
 (require 'org-macs)
 (require 'seq)
+(require 'subr-x)
 (require 'transient)
 (require 'widget)
 
@@ -142,7 +142,7 @@ detail."
   :group 'org-journal-tags)
 
 (defconst org-journal-tags-query-buffer-name "*org-journal-query*"
-  "Default buffer name for org-journal-tags quieries")
+  "Default buffer name for org-journal-tags quieries.")
 
 (defun org-journal-tags--format-new-tag-default (tag)
   "Default formatting function for new org journal tags.
@@ -403,7 +403,10 @@ STR should be a string of one of the following formats:
     (match-string 1 str)))
 
 (defun org-journal-tags--parse-journal-created (created &optional date-re)
-  "Parse a date from the :CREATED: property of org-journal."
+  "Parse a date from the :CREATED: property of org-journal.
+
+DATE-RE is as regex to parse the date, such as one formed by
+`org-journal--format->regex'."
   (unless date-re
     (setq date-re (org-journal--format->regex
                    org-journal-created-property-timestamp-format)))
@@ -464,7 +467,7 @@ can repeat."
 (defun org-journal-tags--clear-date (date)
   "Remove all references to DATE from the database."
   (maphash
-   (lambda (tag-name tag)
+   (lambda (_tag-name tag)
      (remhash date (org-journal-tag-dates tag)))
    (alist-get :tags org-journal-tags-db)))
 
@@ -610,10 +613,10 @@ ELEM should be a headline Org element."
     (seq-filter (lambda (s) s))))
 
 (cl-defun org-journal-tags-prop-apply-delta (&key elem add remove)
-  "Apply changes to org-journal tags to the current section.
+  "Apply changes to the tags in the property drawer.
 
-ELEM should be a level-2 Org headline.  The point is assumed to
-be set at the start of the headline.
+ELEM should be a level-2 org-journal headline.  The point is
+assumed to be set at the start of the headline.
 
 ADD is a list of tags to add to the current headline, REMOVE is a
 list of tags to remove."
@@ -624,7 +627,7 @@ list of tags to remove."
   (save-excursion
     (thread-last
       (org-journal-tags--prop-get-tags elem)
-      (seq-filter (lambda (s) (not (seq-contains remove s))))
+      (seq-filter (lambda (s) (not (seq-contains-p remove s))))
       (append add)
       seq-uniq
       (seq-sort #'string-lessp)
@@ -953,7 +956,8 @@ REFS-1 and REFS-2 are lists of instances of
 (defun org-journal-tags--query-intersect-to-one-ref (refs ref-1)
   "Return parts of REFS that intersect with REF-1.
 
-REFS is a list org `org-journal-tag-reference', REF-1 is one `org-journal-tag-reference'.
+REFS is a list org `org-journal-tag-reference', REF-1 is one
+`org-journal-tag-reference'.
 
 The return value is a list of `org-journal-tag-reference'."
   (let ((date (org-journal-tag-reference-date ref-1))
@@ -1087,7 +1091,7 @@ an empty string is returned, which is a root tag for every other
 tag.
 
 If CHIDLREN is non-nil, names of tags in TAG-NAMES and all their
-children are returned.  Otherwise, only tags in TAG-NAMES are
+CHILDREN are returned.  Otherwise, only tags in TAG-NAMES are
 returned."
   (if tag-names
       (seq-uniq (cl-loop for tag-name in tag-names
@@ -1241,8 +1245,17 @@ The returned value is a list of `org-journal-tag-reference'."
 REFS is a list of `org-journal-tag-reference'.
 
 Grouping is done with `org-journal-tags-date-group-func'.  The
-function should receive a date and return the string name of the
-group."
+function should receive a date (in the form of timestamp) and
+return a string name of the group.
+
+MAX-LENGTH is the maximum number of groups.  The function merges
+all odd groups with even until the total number of groups is less
+than MAX-LENGTH.
+
+DATES-LIST determines the used dates to group.  It is a list of
+lists, in the nested list the first element is the group name and
+the rest are date numbers.  Such a list is constructed by
+`org-journal-tags--get-dates-list'."
   (let* ((dates-list (or dates-list (org-journal-tags--get-dates-list refs)))
          (dates-hash (make-hash-table :test #'equal)))
     (cl-loop for ref in refs
@@ -1288,11 +1301,11 @@ group."
   "A keymap for `org-journal-tags-status-mode'.")
 
 (define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
-  "TODO")
+  "A major mode to display the org-journal-tags status buffer.")
 
 (defun org-journal-tags--buffer-render-info ()
+  "Render the miscellaneous information for the status buffer."
   (let ((dates (org-journal--list-dates)))
-
     (insert (format "Last record:   %s\n"
                     (propertize (thread-last
                                   (last dates)
@@ -1318,6 +1331,10 @@ group."
            append refs))
 
 (defun org-journal-tags--buffer-render-tag-buttons ()
+  "Render tag buttons for the org-journal-tags status buffer.
+
+This function creates a button and a horizontal barchart for each
+tag."
   (let* ((tag-names (seq-sort #'string-lessp (org-journal-tags--list-tags)))
          (dates-list (org-journal-tags--get-dates-list
                       (org-journal-tags--query-sort-refs
@@ -1365,7 +1382,7 @@ group."
 
 ;;;###autoload
 (defun org-journal-tags-status ()
-  "TODO"
+  "Open org-journal-tags status buffer."
   (interactive)
   (org-journal-tags-db-ensure)
   (when-let ((buffer (get-buffer "*org-journal-tags*")))
@@ -1382,8 +1399,11 @@ group."
   "Group REFS to a data series for a barchart.
 
 REFS is a list of `org-journal-tag-reference'.  MAX-LENGTH is the
-maximum length of the barchart. It nil, (1- (windows-body-width))
-is taken."
+maximum length of the barchart.  It nil, (1- (windows-body-width))
+is taken.
+
+DATES-LIST is a list of grouped dates as described in
+`org-journal-tags--group-refs-by-date'."
   (org-journal-tags--group-refs-by-date
    refs (or max-length (1- (window-body-width))) dates-list))
 
@@ -1407,6 +1427,14 @@ necessary to synchronize the height of multiple barcharts."
       'face 'org-journal-tags-barchart-face))))
 
 (defun org-journal-tags--buffer-render-vertical-barchart (groups &optional max-width)
+  "Render a vertical barchar for GROUPS at point.
+
+GROUPS is an output of `org-journal-tags--group-refs-by-date'.
+This function plots a bar for number of refreneces in each
+group.
+
+MAX-WIDTH overrides the maximum number of references per group.
+That can be used to scale multiple barcharts the same way."
   (insert
    (cl-loop with max-name-width = (seq-max (mapcar (lambda (group)
                                                      (length (car group)))
@@ -1460,7 +1488,7 @@ necessary to synchronize the height of multiple barcharts."
   "A keymap for `org-journal-tags-query-mode'.")
 
 (transient-define-prefix org-journal-tags--query-transient-help ()
-  "Commands in the query results buffer"
+  "Commands in the query results buffer."
   ["Section commands"
    ("<tab>" "Toggle section" magit-section-toggle)
    ("M-1" "Show level 1" magit-section-show-level-1-all)
@@ -1604,27 +1632,52 @@ REFS is a list org `org-journal-tag-reference'."
 ;; Query transient
 
 (defclass org-journal-tags--transient-variable (transient-variable)
-  ((transient :initform 'transient--do-call)))
+  ((transient :initform 'transient--do-call))
+  "A base class for settings in the query buffer.
+
+The name of the variable corresponds to the key in
+`org-journal-tags-query'.  Values from the transient suffixes are
+extracted with `org-journal-tags--transient-extract-values',
+converted to a proper plist with
+`org-journal-tags--transient-values-to-params' and fed to
+`org-journal-tags-query'.
+
+The starting values can be get from the
+`org-journal-tags--query-params' variable, which can be made
+buffer-local in certain org-journal-tags buffer or overriden with
+lexical binding.")
 
 (defclass org-journal-tags--transient-switch-with-variable (transient-switch)
   ((variable :initarg :variable)))
 
 (cl-defmethod transient-init-value ((obj org-journal-tags--transient-variable))
+  "Initialize the starting value for the infix.
+
+OBJ is an instance of the `org-journal-tags--transient-variable' class."
   (if (bound-and-true-p org-journal-tags--query-params)
       (oset obj value
             (alist-get (oref obj variable) org-journal-tags--query-params))
     (oset obj value nil)))
 
 (cl-defmethod transient-init-value ((obj org-journal-tags--transient-switch-with-variable))
+  "Initialize the starting value for the infix.
+
+OBJ is an instance of the `org-journal-tags--transient-variable' class."
   (if (bound-and-true-p org-journal-tags--query-params)
       (oset obj value
             (alist-get (oref obj variable) org-journal-tags--query-params))
     (oset obj value nil)))
 
 (cl-defmethod transient-infix-value ((obj org-journal-tags--transient-variable))
+  "Return the value for the infix.
+
+OBJ is an instance of the `org-journal-tags--transient-variable' class."
   (slot-value obj 'value))
 
 (cl-defmethod transient-format-value ((obj org-journal-tags--transient-variable))
+  "A value formatter with `prin1-to-string'.
+
+OBJ is an instance of the `org-journal-tags--transient-variable' class."
   (let ((value (if (slot-boundp obj 'value) (slot-value obj 'value) nil)))
     (if value
         (propertize
@@ -1636,6 +1689,10 @@ REFS is a list org `org-journal-tag-reference'."
   ((reader :initform #'org-journal-tags--transient-tags-reader)))
 
 (defun org-journal-tags--transient-tags-reader (prompt initial-input _history)
+  "Read tags for the `org-journal-tags--transient-tags' class.
+
+PROMPT is a string to prompt with.  INITIAL-INPUT is the initial
+state of the minibuffer."
   (let ((crm-separator " ")
         (crm-local-completion-map
          (let ((map (make-sparse-keymap)))
@@ -1646,6 +1703,9 @@ REFS is a list org `org-journal-tag-reference'."
      prompt (org-journal-tags--list-tags) nil nil initial-input)))
 
 (cl-defmethod transient-format-value ((obj org-journal-tags--transient-tags))
+  "Format value for the `org-journal-tags--transient-tags' class.
+
+OBJ in an instance of that class."
   (let ((value (if (slot-boundp obj 'value) (slot-value obj 'value) nil)))
     (if value
         (propertize
@@ -1656,12 +1716,20 @@ REFS is a list org `org-journal-tag-reference'."
 (defclass org-journal-tags--transient-date (org-journal-tags--transient-variable)
   ((reader :initform #'org-journal-tags--transient-date-reader)))
 
-(defun org-journal-tags--transient-date-reader (prompt initial-input _history)
+(defun org-journal-tags--transient-date-reader (prompt _initial-input _history)
+  "Read the date with `org-read-date'.
+
+PROMPT is a string to prompt with.
+
+Returns a UNIX timestamp."
   (time-convert
    (org-read-date nil t nil prompt)
    'integer))
 
 (cl-defmethod transient-format-value ((obj org-journal-tags--transient-date))
+  "Format value for the `org-journal-tags--transient-date' class.
+
+OBJ in an instance of that class."
   (let ((value (if (slot-boundp obj 'value) (slot-value obj 'value) nil)))
     (if value
         (propertize
@@ -1676,9 +1744,17 @@ REFS is a list org `org-journal-tag-reference'."
   ((reader :initform #'org-journal-tags--transient-regex-reader)))
 
 (defun org-journal-tags--transient-regex-reader (prompt initial-input _history)
+  "Read a regular expression from minibuffer.
+
+Used in the `org-journal-tags--transient-regex' class.  PROMPT is
+a string to prompt with, INITIAL-INPUT is the default state of
+the minibuffer."
   (read-from-minibuffer prompt initial-input))
 
 (cl-defmethod transient-format-value ((obj org-journal-tags--transient-regex))
+  "Format value of `org-journal-tags--transient-regex'.
+
+OBJ is an instance of that class."
   (let ((value (if (slot-boundp obj 'value) (slot-value obj 'value) nil)))
     (if (stringp value)
         (propertize
@@ -1751,6 +1827,11 @@ VALUES should be an alist of transient values."
             (plist-put params :order 'descending)))))
 
 (defmacro org-journal-tags--render-query-refs (&rest body)
+  "Process the query results before rendering them in the buffer.
+
+The macro runs a query for the parameters extracted from the
+current transient, put results into the RES variable and makes in
+available to the BODY, which can process the variable however necessary."
   `(let* ((params (org-journal-tags--transient-extract-values))
           (refs (apply #'org-journal-tags-query
                        (org-journal-tags--transient-values-to-params params))))
@@ -1809,7 +1890,7 @@ VALUES should be an alist of transient values."
            collect (oset suffix value nil)))
 
 (transient-define-prefix org-journal-tags-transient-query ()
-  "Query Org Journal"
+  "Query Org Journal."
   ["Tags"
    ("ti" org-journal-tags--transient-include-tags)
    ("te" org-journal-tags--transient-exclude-tags)
