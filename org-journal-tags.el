@@ -1251,7 +1251,8 @@ group."
                                                 (alist-get :refs (cdr b)))))))))
         result))))
 
-;; View
+
+;; Status buffer
 
 (defvar org-journal-tags-status-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1311,30 +1312,8 @@ group."
       (org-journal-tags--buffer-render-contents))
     (switch-to-buffer-other-window buffer)))
 
-(defclass org-journal-tags-date-section (magit-section)
-  ((date :initform nil)))
 
-(defclass org-journal-tags-time-section (magit-section)
-  ((ref :initform nil)))
-
-(defvar-local org-journal-tags--query-refs nil)
-
-(defvar-local org-journal-tags--query-params nil)
-
-(defvar org-journal-tags-query-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map magit-section-mode-map)
-    (when (fboundp #'evil-define-key*)
-      (evil-define-key* 'normal map
-        (kbd "<tab>") #'magit-section-toggle
-        "q" '(lambda ()
-               (interactive)
-               (quit-window t))))
-    map)
-  "A keymap for `org-journal-tags-query-mode'.")
-
-(define-derived-mode org-journal-tags-query-mode magit-section "Org Journal Tags Query"
-  "TODO")
+;; Barcharts
 
 (defun org-journal-tags--buffer-get-barchart-data (refs &optional max-length)
   "Group REFS to a data series for a barchart.
@@ -1399,7 +1378,91 @@ necessary to synchronize the height of multiple barcharts."
                                 'face 'org-journal-tags-barchar-face)
                     "\n"))))
 
+;; Query buffer
+
+(defvar-local org-journal-tags--query-refs nil)
+
+(defvar-local org-journal-tags--query-params nil)
+
+(defvar org-journal-tags-query-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point)
+    (when (fboundp #'evil-define-key*)
+      (evil-define-key* '(normal motion) map
+        (kbd "<tab>") #'magit-section-toggle
+        (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point
+        "q" '(lambda ()
+               (interactive)
+               (quit-window t))))
+    map)
+  "A keymap for `org-journal-tags-query-mode'.")
+
+(define-derived-mode org-journal-tags-query-mode magit-section "Org Journal Tags Query"
+  "TODO"
+  :group 'org-journal-tags
+  (setq-local buffer-read-only t))
+
+(defclass org-journal-tags-date-section (magit-section)
+  ((date :initform nil)))
+
+(defclass org-journal-tags-time-section (magit-section)
+  ((ref :initform nil)))
+
+(defun org-journal-tags--goto-date (date)
+  "Open the org-journal file corresponding to DATE.
+
+DATE is a UNIX timestamp."
+  (let ((org-journal-file (thread-last
+                            date
+                            seconds-to-time
+                            org-journal--get-entry-path)))
+    (unless (file-exists-p org-journal-file)
+      (user-error "Journal file %s not found" org-journal-file))
+    (progn
+      (funcall org-journal-find-file org-journal-file)
+      (unless (org-journal--daily-p)
+        (thread-last date
+                     seconds-to-time
+                     decode-time
+                     ((lambda (time) (list (nth 4 time)
+                                           (nth 3 time)
+                                           (nth 5 time))))
+                     org-journal--goto-entry)))))
+
+(defun org-journal-tags--goto-ref (ref)
+  "Open the org-jounral file corresponding to REF.
+
+REF is an instance `org-journal-tag-reference'."
+  (let ((org-journal-file (thread-last
+                            ref
+                            org-journal-tag-reference-date
+                            seconds-to-time
+                            org-journal--get-entry-path)))
+    (unless (file-exists-p org-journal-file)
+      (user-error "Journal file %s not found" org-journal-file))
+    (progn
+      (funcall org-journal-find-file org-journal-file)
+      (org-journal-tags--ensure-decrypted)
+      (goto-char (org-journal-tag-reference-ref-start ref)))))
+
+(defun org-journal-tags--buffer-visit-thing-at-point ()
+  "Open thing at point in the org-journal-tags query buffer."
+  (interactive)
+  (let ((section (magit-current-section)))
+    (cond
+     ((and (slot-exists-p section 'ref)
+           (slot-boundp section 'ref))
+      (org-journal-tags--goto-ref (oref section ref)))
+     ((and (slot-exists-p section 'date)
+           (slot-boundp section 'date))
+      (org-journal-tags--goto-date (oref section date)))
+     (t (user-error "Nothing to visit at point")))))
+
 (defun org-journal-tags--buffer-render-query (refs)
+  "Render the contents of the org-journal-tags query buffer.
+
+REFS is a list org `org-journal-tag-reference'."
   (let ((inhibit-read-only t))
     (erase-buffer)
     (setq-local org-journal-tags--query-refs refs)
