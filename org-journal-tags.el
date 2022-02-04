@@ -31,6 +31,8 @@
 (require 'cl-lib)
 (require 'crm)
 (require 'magit-section)
+(require 'org)
+(require 'subr-x)
 (require 'org-journal)
 (require 'org-macs)
 (require 'seq)
@@ -252,9 +254,14 @@ record in the journal."
 
 ;; Org link
 
-(defun org-journal-tags--follow (tag prefix)
-  "TODO. Eventually this fill do something."
-  (message (org-journal-tags--links-get-tag tag)))
+(defun org-journal-tags--follow (tag _prefix)
+  "Open org-journal-tags query transient for TAG."
+  (let ((org-journal-tags--query-params
+         `((:tag-names . (,(replace-regexp-in-string
+                            (rx "::" (* nonl) eos)
+                            ""
+                            tag))))))
+    (org-journal-tags-transient-query)))
 
 (defun org-journal-tags--complete (&optional _)
   "Create an org-journal-tags link using completion."
@@ -422,24 +429,24 @@ every section."
                   org-journal-created-property-timestamp-format)))
     (org-element-map (org-element-parse-buffer) 'headline
       (lambda (elem)
-        (when-let ((_ (= (org-element-property :level elem) 2))
-                   (created
-                    (when-let (created (org-element-property
-                                        :CREATED
-                                        (org-element-property :parent elem)))
-                      (org-journal-tags--parse-journal-created created date-re)))
-                   (ref (org-journal-tag-reference--create
-                         :ref-start (org-element-property :contents-begin elem)
-                         :ref-end (org-element-property :contents-end elem)
-                         :time (org-element-property :raw-value elem)
-                         :date created)))
-          (when add-empty
-            (push (cons "" (copy-org-journal-tag-reference ref)) result))
-          (when-let ((tags (org-element-property :TAGS elem)))
-            (cl-loop for link in (split-string tags)
-                     do (when-let ((tag (org-journal-tags--links-parse-link-str link)))
-                          (push (cons tag (copy-org-journal-tag-reference ref))
-                                result)))))))
+        (when (= (org-element-property :level elem) 2)
+          (when-let ((created
+                      (when-let (created (org-element-property
+                                          :CREATED
+                                          (org-element-property :parent elem)))
+                        (org-journal-tags--parse-journal-created created date-re)))
+                     (ref (org-journal-tag-reference--create
+                           :ref-start (org-element-property :contents-begin elem)
+                           :ref-end (org-element-property :contents-end elem)
+                           :time (org-element-property :raw-value elem)
+                           :date created)))
+            (when add-empty
+              (push (cons "" (copy-org-journal-tag-reference ref)) result))
+            (when-let ((tags (org-element-property :TAGS elem)))
+              (cl-loop for link in (split-string tags)
+                       do (when-let ((tag (org-journal-tags--links-parse-link-str link)))
+                            (push (cons tag (copy-org-journal-tag-reference ref))
+                                  result))))))))
     result))
 
 (defun org-journal-tags--links-extract ()
@@ -985,6 +992,7 @@ The return value is a list of `org-journal-tag-reference'."
          ((and (<= start-2 start-1) (<= start-1 end-2))
           (setq result
                 (org-journal-tags--query-merge-refs-push
+                 result
                  (org-journal-tag-reference--create
                   :ref-start start-1 :ref-end end-2
                   :date date :time time))))
@@ -1261,6 +1269,12 @@ group."
 
 ;; Status buffer
 
+(defvar-local org-journal-tags--query-refs nil)
+
+(defvar-local org-journal-tags--query-params nil)
+
+(declare-function #'evil-define-key* "evil-core.el")
+
 (defvar org-journal-tags-status-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
@@ -1426,10 +1440,6 @@ necessary to synchronize the height of multiple barcharts."
 
 ;; Query buffer
 
-(defvar-local org-journal-tags--query-refs nil)
-
-(defvar-local org-journal-tags--query-params nil)
-
 (defvar org-journal-tags-query-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
@@ -1490,6 +1500,9 @@ DATE is a UNIX timestamp."
         (thread-last date
                      seconds-to-time
                      decode-time
+                     ;; XXX It is possible to pass a lambda as a
+                     ;; single form in the threading macro, but
+                     ;; somehow it's deprecated by the byte compiler
                      (funcall (lambda (time) (list (nth 4 time)
                                                    (nth 3 time)
                                                    (nth 5 time))))
