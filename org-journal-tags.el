@@ -122,7 +122,7 @@ Used by `org-journal-tags-insert-tag' and
   :type 'list
   :group 'org-journal-tags)
 
-(defface org-journal-tags-barchar-face
+(defface org-journal-tags-barchart-face
   '((t (:inherit warning)))
   "A face to plot a horizontal barchar."
   :group 'org-journal-tags)
@@ -1336,12 +1336,28 @@ group."
 (define-derived-mode org-journal-tags-query-mode magit-section "Org Journal Tags Query"
   "TODO")
 
-(defun org-journal-tags--buffer-render-horizontal-barchart (refs)
-  "Render a horizonal barchar for REFS at point."
+(defun org-journal-tags--buffer-get-barchart-data (refs &optional max-length)
+  "Group REFS to a data series for a barchart.
+
+REFS is a list of `org-journal-tag-reference'.  MAX-LENGTH is the
+maximum length of the barchart. It nil, (1- (windows-body-width))
+is taken."
+  (org-journal-tags--group-refs-by-date
+   refs (or max-length (1- (window-body-width)))))
+
+(defun org-journal-tags--buffer-render-horizontal-barchart (groups &optional max-height)
+  "Render a horizonal barchar for DATA at point.
+
+DATA is a list of numbers.  0 will be rendered as the first
+symbol in `org-journal-tags-barchart-symbols', the maximum number
+will be rendered as the last symbol.
+
+The maximum number can be overriden with MAX-HEIGHT is it's
+necessary to synchronize the height of multiple barcharts."
   (let* ((data (mapcar
                 (lambda (group) (length (alist-get :refs (cdr group))))
-                (org-journal-tags--group-refs-by-date refs (1- (window-body-width)))))
-         (max-datum (seq-max data))
+                groups))
+         (max-datum (or max-height (seq-max data)))
          (max-symbol-index (length org-journal-tags-barchart-symbols)))
     (insert
      (propertize
@@ -1349,7 +1365,39 @@ group."
                for symbol-index = (floor (* datum
                                             (/ (float max-symbol-index) max-datum)))
                concat (nth symbol-index org-journal-tags-barchart-symbols))
-      'face 'org-journal-tags-barchar-face))))
+      'face 'org-journal-tags-barchart-face))))
+
+(defun org-journal-tags--buffer-render-vertical-barchart (groups &optional max-width)
+  (insert
+   (cl-loop with max-name-width = (seq-max (mapcar (lambda (group)
+                                                     (length (car group)))
+                                                   groups))
+            with max-group-width = (or max-width
+                                       (thread-last
+                                         groups
+                                         (mapcar
+                                          (lambda (group)
+                                            (length (alist-get :refs (cdr group)))))
+                                         seq-max))
+            with max-space-for-group = (- (window-body-width) 6
+                                          max-name-width)
+            with width-coef = (if (< max-space-for-group max-group-width)
+                                  (/ max-group-width max-space-for-group)
+                                1)
+            for group in groups
+            for number = (length (alist-get :refs (cdr group)))
+            for ticks-number = (floor (* number width-coef))
+            concat (concat
+                    (propertize (string-pad (car group) max-name-width)
+                                'face 'org-journal-tags-info-face)
+                    " "
+                    (string-pad
+                     (format "[%d]" number)
+                     4)
+                    ": "
+                    (propertize (string-pad "" ticks-number ?+)
+                                'face 'org-journal-tags-barchar-face)
+                    "\n"))))
 
 (defun org-journal-tags--buffer-render-query (refs)
   (let ((inhibit-read-only t))
@@ -1364,11 +1412,12 @@ group."
                            'face 'org-journal-tags-info-face)
                "\n"))
       (magit-insert-section (org-journal-tags-query-barchart nil t)
-        (org-journal-tags--buffer-render-horizontal-barchart refs)
-        (magit-insert-heading)
-        (insert "\n")
-        (insert "kek\n"))
-      (insert "\n")
+        (let ((groups (org-journal-tags--buffer-get-barchart-data refs)))
+          (org-journal-tags--buffer-render-horizontal-barchart groups)
+          (insert "\n")
+          (magit-insert-heading)
+          (org-journal-tags--buffer-render-vertical-barchart groups)
+          (insert "\n")))
       (dolist (date-refs
                (seq-group-by
                 #'org-journal-tag-reference-date
