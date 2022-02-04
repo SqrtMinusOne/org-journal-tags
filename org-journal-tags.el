@@ -163,6 +163,15 @@ DATE is a UNIX timestamp."
   (format-time-string "%Y-%W" (seconds-to-time date)))
 
 
+(defvar-local org-journal-tags--query-refs nil
+  "The current query results in the org-journal-tags query buffer.")
+
+(defvar-local org-journal-tags--query-params nil
+  "Query params in the org-jorunal-tags query buffer or elsewhere.
+
+Overriding this variable can be used to change the starting value
+of infixes in `org-journal-tags-transient-query'.")
+
 ;; Data model and database
 
 (cl-defstruct (org-journal-tag (:constructor org-journal-tag--create))
@@ -261,6 +270,11 @@ record in the journal."
                             (rx "::" (* nonl) eos)
                             ""
                             tag))))))
+    ;; XXX `org-journal-tags--query-params' is used inside init-value
+    ;; methods of infixes of the `org-journal-tags-transient-query'.
+    ;; I have to idea how else to silence the "Unused lexical
+    ;; variable" warning.
+    (ignore org-journal-tags--query-params)
     (org-journal-tags-transient-query)))
 
 (defun org-journal-tags--complete (&optional _)
@@ -632,7 +646,7 @@ list of tags to remove."
       seq-uniq
       (seq-sort #'string-lessp)
       (mapcar org-journal-tags-format-new-tag-function)
-      ((lambda (tags) (string-join tags " ")))
+      (funcall (lambda (tags) (string-join tags " ")))
       (org-set-property org-journal-tags-default-tag-prop))))
 
 ;;;###autoload
@@ -1282,11 +1296,7 @@ the rest are date numbers.  Such a list is constructed by
 
 ;; Status buffer
 
-(defvar-local org-journal-tags--query-refs nil)
-
-(defvar-local org-journal-tags--query-params nil)
-
-(declare-function #'evil-define-key* "evil-core.el")
+(declare-function #'evil-define-key* "evil-core")
 
 (defvar org-journal-tags-status-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1294,9 +1304,9 @@ the rest are date numbers.  Such a list is constructed by
     (when (fboundp #'evil-define-key*)
       (evil-define-key* 'normal map
         (kbd "<tab>") #'magit-section-toggle
-        "q" '(lambda ()
-               (interactive)
-               (quit-window t))))
+        "q" (lambda ()
+              (interactive)
+              (quit-window t))))
     map)
   "A keymap for `org-journal-tags-status-mode'.")
 
@@ -1340,8 +1350,11 @@ tag."
                       (org-journal-tags--query-sort-refs
                        (org-journal-tags--get-all-tag-references ""))))
          (max-tag-name (seq-max (mapcar #'length tag-names)))
-	     (widget-push-button-prefix "")
-	     (widget-push-button-suffix ""))
+         (widget-push-button-prefix "")
+         (widget-push-button-suffix ""))
+    ;; XXX Silencing the byte-compliation warnings.  These two wariables change the behavious of widget-create.
+    (ignore widget-push-button-prefix)
+    (ignore widget-push-button-suffix)
     (dolist (tag-name tag-names)
       (widget-create 'push-button
                      :notify (lambda (widget &rest _)
@@ -1481,9 +1494,9 @@ That can be used to scale multiple barcharts the same way."
         "r" #'org-journal-tags--query-refresh
         "s" #'org-journal-tags-transient-query
         "?" #'org-journal-tags--query-transient-help
-        "q" '(lambda ()
-               (interactive)
-               (quit-window t))))
+        "q" (lambda ()
+              (interactive)
+              (quit-window t))))
     map)
   "A keymap for `org-journal-tags-query-mode'.")
 
@@ -1575,11 +1588,10 @@ REFS is a list org `org-journal-tag-reference'."
     (unless (eq major-mode 'org-journal-tags-query-mode)
       (org-journal-tags-query-mode))
     (magit-insert-section (org-journal-tags-query)
-      (insert (concat
-               "Found results: "
-               (propertize (number-to-string (length refs))
-                           'face 'org-journal-tags-info-face)
-               "\n"))
+      (insert "Found results: "
+              (propertize (number-to-string (length refs))
+                          'face 'org-journal-tags-info-face)
+              "\n")
       (magit-insert-section (org-journal-tags-query-barchart nil t)
         (let ((groups (org-journal-tags--buffer-get-barchart-data refs)))
           (org-journal-tags--buffer-render-horizontal-barchart
