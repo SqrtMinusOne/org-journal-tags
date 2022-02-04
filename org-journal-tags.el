@@ -39,6 +39,19 @@
 (require 'transient)
 (require 'widget)
 
+
+;; XXX No idea why the byte compiler doesn't see the function and
+;; doesn't let me (require 'cl-macs).  It is required in cl-lib though
+(declare-function cl--alist-to-plist "cl-macs")
+
+;; XXX I want to have the compatibility with evil-mode without
+;; requiring it, so I check whether this function is bound.
+(declare-function evil-define-key* "evil-core")
+
+;; XXX Also no idea why the byte compiler doesn't see this
+;; function. It is obviously in subr-x
+(declare-function string-pad "subr-x")
+
 (defgroup org-journal-tags ()
   "Manage tags for org-journal."
   :group 'org-journal)
@@ -1296,8 +1309,6 @@ the rest are date numbers.  Such a list is constructed by
 
 ;; Status buffer
 
-(declare-function #'evil-define-key* "evil-core")
-
 (defvar org-journal-tags-status-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
@@ -1352,7 +1363,8 @@ tag."
          (max-tag-name (seq-max (mapcar #'length tag-names)))
          (widget-push-button-prefix "")
          (widget-push-button-suffix ""))
-    ;; XXX Silencing the byte-compliation warnings.  These two wariables change the behavious of widget-create.
+    ;; XXX Silencing the byte-compliation warnings.  These two
+    ;; wariables change the behaviou of widget-create.
     (ignore widget-push-button-prefix)
     (ignore widget-push-button-suffix)
     (dolist (tag-name tag-names)
