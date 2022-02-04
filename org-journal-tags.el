@@ -1490,9 +1490,9 @@ DATE is a UNIX timestamp."
         (thread-last date
                      seconds-to-time
                      decode-time
-                     ((lambda (time) (list (nth 4 time)
-                                           (nth 3 time)
-                                           (nth 5 time))))
+                     (funcall (lambda (time) (list (nth 4 time)
+                                                   (nth 3 time)
+                                                   (nth 5 time))))
                      org-journal--goto-entry)))))
 
 (defun org-journal-tags--goto-ref (ref)
@@ -1559,7 +1559,8 @@ REFS is a list org `org-journal-tag-reference'."
                        seconds-to-time
                        (format-time-string org-journal-date-format)
                        (format "%s\n")
-                       ((lambda (s)
+                       (funcall
+                        (lambda (s)
                           (propertize s 'face 'org-journal-tags-date-header)))
                        insert)
           (oset section date (car date-refs))
@@ -1570,7 +1571,8 @@ REFS is a list org `org-journal-tag-reference'."
                 ref
                 org-journal-tag-reference-time
                 (format "%s\n")
-                ((lambda (s)
+                (funcall
+                 (lambda (s)
                    (propertize s 'face 'org-journal-tags-time-header)))
                 insert)
               (oset section ref ref)
