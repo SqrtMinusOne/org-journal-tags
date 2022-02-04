@@ -35,6 +35,7 @@
 (require 'org-macs)
 (require 'seq)
 (require 'transient)
+(require 'widget)
 
 (defgroup org-journal-tags ()
   "Manage tags for org-journal."
@@ -123,7 +124,10 @@ Used by `org-journal-tags-insert-tag' and
   :group 'org-journal-tags)
 
 (defface org-journal-tags-barchart-face
-  '((t (:inherit warning)))
+  ;; XXX I don't think `:inherit' and override would harm anyone
+  ;; here. `fixed-pitch' generally has only the `:family' attribute
+  ;; set.
+  `((t (:foreground ,(face-foreground 'warning) :inherit fixed-pitch)))
   "A face to plot a horizontal barchar."
   :group 'org-journal-tags)
 
@@ -1211,7 +1215,19 @@ The returned value is a list of `org-journal-tag-reference'."
              results (eq order 'ascending))))
     results))
 
-(defun org-journal-tags--group-refs-by-date (refs &optional max-length)
+(defun org-journal-tags--get-dates-list (refs)
+  "Get the date list to group REFS."
+  (let ((start-date (org-journal-tag-reference-date (nth 0 refs)))
+        (end-date (org-journal-tag-reference-date (car (last refs)))))
+    (when (> start-date end-date)
+      (setq start-date end-date)
+      (setq end-date (org-journal-tag-reference-date (nth 0 refs))))
+    (seq-group-by
+     org-journal-tags-date-group-func
+     (cl-loop for date from start-date to end-date by (* 60 60 24)
+              collect date))))
+
+(defun org-journal-tags--group-refs-by-date (refs &optional max-length dates-list)
   "Group REFS by date.
 
 REFS is a list of `org-journal-tag-reference'.
@@ -1219,38 +1235,29 @@ REFS is a list of `org-journal-tag-reference'.
 Grouping is done with `org-journal-tags-date-group-func'.  The
 function should receive a date and return the string name of the
 group."
-  (let ((start-date (org-journal-tag-reference-date (nth 0 refs)))
-        (end-date (org-journal-tag-reference-date (car (last refs)))))
-    (when (> start-date end-date)
-      (setq start-date end-date)
-      (setq end-date (org-journal-tag-reference-date (nth 0 refs))))
-    (let* ((dates-list (seq-group-by
-                        org-journal-tags-date-group-func
-                        (cl-loop for date from start-date to end-date by (* 60 60 24)
-                                 collect date)))
-           (dates-hash (make-hash-table :test #'equal)))
-      (cl-loop for ref in refs
-               for date-group = (funcall org-journal-tags-date-group-func
-                                         (org-journal-tag-reference-date ref))
-               do (puthash date-group
-                           (push ref (gethash date-group dates-hash))
-                           dates-hash))
-      (let ((result (cl-loop for group in dates-list
-                             for date-group = (car group)
-                             for dates = (cdr group)
-                             for refs = (gethash date-group dates-hash)
-                             collect `(,date-group . ((:dates . ,dates) (:refs . ,refs))))))
-        (while (and max-length (> (length result) max-length))
-          (setq result
-                (cl-loop for (a b) on result by #'cddr
-                         collect
-                         `(,(car a)
-                           . ((:dates . ,(append (alist-get :dates (cdr a))
-                                                 (alist-get :dates (cdr b))))
-                              (:refs . ,(append (alist-get :refs (cdr a))
-                                                (alist-get :refs (cdr b)))))))))
-        result))))
-
+  (let* ((dates-list (or dates-list (org-journal-tags--get-dates-list refs)))
+         (dates-hash (make-hash-table :test #'equal)))
+    (cl-loop for ref in refs
+             for date-group = (funcall org-journal-tags-date-group-func
+                                       (org-journal-tag-reference-date ref))
+             do (puthash date-group
+                         (push ref (gethash date-group dates-hash))
+                         dates-hash))
+    (let ((result (cl-loop for group in dates-list
+                           for date-group = (car group)
+                           for dates = (cdr group)
+                           for refs = (gethash date-group dates-hash)
+                           collect `(,date-group . ((:dates . ,dates) (:refs . ,refs))))))
+      (while (and max-length (> (length result) max-length))
+        (setq result
+              (cl-loop for (a b) on result by #'cddr
+                       collect
+                       `(,(car a)
+                         . ((:dates . ,(append (alist-get :dates (cdr a))
+                                               (alist-get :dates (cdr b))))
+                            (:refs . ,(append (alist-get :refs (cdr a))
+                                              (alist-get :refs (cdr b)))))))))
+      result)))
 
 ;; Status buffer
 
@@ -1271,9 +1278,7 @@ group."
 
 (defun org-journal-tags--buffer-render-info ()
   (let ((dates (org-journal--list-dates)))
-    (insert (format "Date:          %s\n"
-                    (propertize (format-time-string org-journal-date-format)
-                                'face 'org-journal-tags-info-face)))
+
     (insert (format "Last record:   %s\n"
                     (propertize (thread-last
                                   (last dates)
@@ -1291,14 +1296,58 @@ group."
                     (propertize (number-to-string (length dates))
                                 'face 'org-journal-tags-info-face)))))
 
+(defun org-journal-tags--get-all-tag-references (tag-name)
+  "Extract all references to TAG-NAME from the database."
+  (cl-loop for refs being the hash-values of
+           (org-journal-tag-dates
+            (gethash tag-name (alist-get :tags org-journal-tags-db)))
+           append refs))
+
+(defun org-journal-tags--buffer-render-tag-buttons ()
+  (let* ((tag-names (seq-sort #'string-lessp (org-journal-tags--list-tags)))
+         (dates-list (org-journal-tags--get-dates-list
+                      (org-journal-tags--query-sort-refs
+                       (org-journal-tags--get-all-tag-references ""))))
+         (max-tag-name (seq-max (mapcar #'length tag-names)))
+	     (widget-push-button-prefix "")
+	     (widget-push-button-suffix ""))
+    (dolist (tag-name tag-names)
+      (widget-create 'push-button
+                     :notify (lambda (widget &rest _)
+                               (setq-local org-journal-tags--query-params
+                                           `((:tag-names
+                                              . (,(widget-get widget :tag-name)))))
+                               (org-journal-tags-transient-query))
+                     :tag-name tag-name
+                     (string-pad tag-name max-tag-name))
+      (widget-insert " ")
+      (org-journal-tags--buffer-render-horizontal-barchart
+       (mapcar
+        (lambda (group) (length (alist-get :refs (cdr group))))
+        (org-journal-tags--buffer-get-barchart-data
+         (org-journal-tags--get-all-tag-references tag-name)
+         (- (window-body-width) max-tag-name 2)
+         dates-list)))
+      (widget-insert "\n"))))
+
 (defun org-journal-tags--buffer-render-contents ()
   "Render the contents of the org-journal-tags status buffer."
   (let ((inhibit-read-only t))
     (erase-buffer)
     (org-journal-tags-status-mode)
-    (magit-insert-section (org-journal-tags)
-      (magit-insert-heading)
-      (org-journal-tags--buffer-render-info))))
+    (magit-insert-section (org-journal-tags-info)
+      (magit-insert-section (org-journal-tags)
+        (insert (format "Date:          %s\n"
+                        (propertize (format-time-string org-journal-date-format)
+                                    'face 'org-journal-tags-info-face)))
+        (magit-insert-heading)
+        (org-journal-tags--buffer-render-info))
+      (insert "\n")
+      (magit-insert-section (org-journal-tags)
+        (insert (propertize "All tags" 'face 'magit-section-heading))
+        (magit-insert-heading)
+        (org-journal-tags--buffer-render-tag-buttons))))
+  (goto-char (point-min)))
 
 ;;;###autoload
 (defun org-journal-tags-status ()
@@ -1315,17 +1364,17 @@ group."
 
 ;; Barcharts
 
-(defun org-journal-tags--buffer-get-barchart-data (refs &optional max-length)
+(defun org-journal-tags--buffer-get-barchart-data (refs &optional max-length dates-list)
   "Group REFS to a data series for a barchart.
 
 REFS is a list of `org-journal-tag-reference'.  MAX-LENGTH is the
 maximum length of the barchart. It nil, (1- (windows-body-width))
 is taken."
   (org-journal-tags--group-refs-by-date
-   refs (or max-length (1- (window-body-width)))))
+   refs (or max-length (1- (window-body-width))) dates-list))
 
-(defun org-journal-tags--buffer-render-horizontal-barchart (groups &optional max-height)
-  "Render a horizonal barchar for DATA at point.
+(defun org-journal-tags--buffer-render-horizontal-barchart (data &optional max-height)
+  "Render a horizonal barchart for DATA at point.
 
 DATA is a list of numbers.  0 will be rendered as the first
 symbol in `org-journal-tags-barchart-symbols', the maximum number
@@ -1333,16 +1382,13 @@ will be rendered as the last symbol.
 
 The maximum number can be overriden with MAX-HEIGHT is it's
 necessary to synchronize the height of multiple barcharts."
-  (let* ((data (mapcar
-                (lambda (group) (length (alist-get :refs (cdr group))))
-                groups))
-         (max-datum (or max-height (seq-max data)))
-         (max-symbol-index (length org-journal-tags-barchart-symbols)))
+  (let* ((max-datum (or max-height (max 1 (seq-max data))))
+         (max-symbol-index (1- (length org-journal-tags-barchart-symbols))))
     (insert
      (propertize
       (cl-loop for datum in data
-               for symbol-index = (floor (* datum
-                                            (/ (float max-symbol-index) max-datum)))
+               for symbol-index = (ceiling (* datum
+                                              (/ (float max-symbol-index) max-datum)))
                concat (nth symbol-index org-journal-tags-barchart-symbols))
       'face 'org-journal-tags-barchart-face))))
 
@@ -1375,7 +1421,7 @@ necessary to synchronize the height of multiple barcharts."
                      4)
                     ": "
                     (propertize (string-pad "" ticks-number ?+)
-                                'face 'org-journal-tags-barchar-face)
+                                'face 'org-journal-tags-barchart-face)
                     "\n"))))
 
 ;; Query buffer
@@ -1388,18 +1434,37 @@ necessary to synchronize the height of multiple barcharts."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
     (define-key map (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point)
+    (define-key map (kbd "s") #'org-journal-tags-transient-query)
+    (define-key map (kbd "r") #'org-journal-tags--query-refresh)
     (when (fboundp #'evil-define-key*)
       (evil-define-key* '(normal motion) map
         (kbd "<tab>") #'magit-section-toggle
         (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point
+        "r" #'org-journal-tags--query-refresh
+        "s" #'org-journal-tags-transient-query
+        "?" #'org-journal-tags--query-transient-help
         "q" '(lambda ()
                (interactive)
                (quit-window t))))
     map)
   "A keymap for `org-journal-tags-query-mode'.")
 
+(transient-define-prefix org-journal-tags--query-transient-help ()
+  "Commands in the query results buffer"
+  ["Section commands"
+   ("<tab>" "Toggle section" magit-section-toggle)
+   ("M-1" "Show level 1" magit-section-show-level-1-all)
+   ("M-2" "Show level 2" magit-section-show-level-2-all)
+   ("M-3" "Show level 3" magit-section-show-level-3-all)
+   ("M-4" "Show level 4" magit-section-show-level-4-all)]
+  ["General commands"
+   ("s" "Update the query" org-journal-tags-transient-query)
+   ("r" "Refresh buffer" org-journal-tags--query-refresh)
+   ("<RET>" "Visit thing at point" org-journal-tags--buffer-visit-thing-at-point)
+   ("q" "Quit" transient-quit-one)])
+
 (define-derived-mode org-journal-tags-query-mode magit-section "Org Journal Tags Query"
-  "TODO"
+  "A major mode to display results of org-journal-tags quieries."
   :group 'org-journal-tags
   (setq-local buffer-read-only t))
 
@@ -1476,7 +1541,10 @@ REFS is a list org `org-journal-tag-reference'."
                "\n"))
       (magit-insert-section (org-journal-tags-query-barchart nil t)
         (let ((groups (org-journal-tags--buffer-get-barchart-data refs)))
-          (org-journal-tags--buffer-render-horizontal-barchart groups)
+          (org-journal-tags--buffer-render-horizontal-barchart
+           (mapcar
+            (lambda (group) (length (alist-get :refs (cdr group))))
+            groups))
           (insert "\n")
           (magit-insert-heading)
           (org-journal-tags--buffer-render-vertical-barchart groups)
@@ -1510,6 +1578,12 @@ REFS is a list org `org-journal-tag-reference'."
               (insert (org-journal-tags--extract-ref ref))
               (insert "\n"))))))
     (goto-char (point-min))))
+
+(defun org-journal-tags--query-refresh ()
+  "Refresh the current org-journal-tags query buffer."
+  (interactive)
+  (org-journal-tags--buffer-render-query
+   org-journal-tags--query-refs))
 
 
 ;; Query transient
@@ -1720,7 +1794,7 @@ VALUES should be an alist of transient values."
            collect (oset suffix value nil)))
 
 (transient-define-prefix org-journal-tags-transient-query ()
-  "Query"
+  "Query Org Journal"
   ["Tags"
    ("ti" org-journal-tags--transient-include-tags)
    ("te" org-journal-tags--transient-exclude-tags)
@@ -1743,6 +1817,7 @@ VALUES should be an alist of transient values."
   ["Actions"
    :class transient-row
    ("e" org-journal-tags--transient-exec-new-query)
+   ("<RET>" org-journal-tags--transient-exec-new-query)
    ("Q" org-journal-tags--transient-reset)
    ("q" "Quit" transient-quit-one)])
 
