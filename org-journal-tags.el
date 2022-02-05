@@ -1378,7 +1378,9 @@ BODY is put in that lambda."
    ("q" "Quit" transient-quit-one)])
 
 (define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
-  "A major mode to display the org-journal-tags status buffer.")
+  "A major mode to display the org-journal-tags status buffer."
+  :group 'org-journal-tags
+  (setq-local buffer-read-only t))
 
 (defun org-journal-tags--buffer-render-info ()
   "Render the miscellaneous information for the status buffer."
@@ -1832,7 +1834,12 @@ OBJ in an instance of that class."
 Used in the `org-journal-tags--transient-regex' class.  PROMPT is
 a string to prompt with, INITIAL-INPUT is the default state of
 the minibuffer."
-  (read-from-minibuffer prompt initial-input))
+  (let ((value (read-from-minibuffer prompt initial-input)))
+    (if (string-match-p (rx "(rx") value)
+        (condition-case err
+            (eval (car (read-from-string value)))
+          (error (format "Error: %s" (prin1-to-string err))))
+      value)))
 
 (cl-defmethod transient-format-value ((obj org-journal-tags--transient-regex))
   "Format value of `org-journal-tags--transient-regex'.
