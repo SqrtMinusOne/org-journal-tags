@@ -1,4 +1,4 @@
-;;; org-journal-tags.el --- TODO -*- lexical-binding: t -*-
+;;; org-journal-tags.el --- Tagging and querying system of org-journal -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2022 Korytov Pavel
 
@@ -45,7 +45,8 @@
 (declare-function cl--alist-to-plist "cl-macs")
 
 ;; XXX I want to have the compatibility with evil-mode without
-;; requiring it, so I check whether this function is bound.
+;; requiring it, so I check whether this function is bound later in
+;; the code.
 (declare-function evil-define-key* "evil-core")
 
 ;; XXX Also no idea why the byte compiler doesn't see this
@@ -53,7 +54,7 @@
 (declare-function string-pad "subr-x")
 
 (defgroup org-journal-tags ()
-  "Manage tags for org-journal."
+  "Tagging and querying system for org-journal."
   :group 'org-journal)
 
 (defcustom org-journal-tags-db-file
@@ -67,24 +68,26 @@
 (defvar org-journal-tags-db nil
   "The core org-journal-tags database.
 
-The database is an alist with two keys: :tags and :files.
+The database is an alist with two keys:
+- `:tags' is a hash-map with tag names as keys and instances of
+  `org-journal-tag' as values.
+- `:files' is also a hash-map with org-journal files as keys and
+  timestamps of their last update as values.  This is used to keep
+  track of updates in the filesystem, for instance when journal files
+  are created on some other machine.
 
-`:tags' is a hash-map with tag names as keys and instances of
-`org-journal-tag' as values.
-
-`:files' is also a hash-map with org-journal files as keys and
-timestamps of their last update as values.  This is used to keep
-track of updates in the filesystem, for instance when journal
-files are created on some other machine.
+Everywhere in this packages dates are used in the form of UNIX
+timestamp, e.g. such as retunrned by (time-convert nil 'integer).
 
 The database is stored in the file, path to which is set by
-`org-journal-tags-db-file', loaded from filesystem with
-`org-journal-tags-db-load' and saved with
+`org-journal-tags-db-file'.
+
+Also take a look at `org-journal-tags-db-load' and
 `org-journal-tags-db-save'.")
 
 (defface org-journal-tags-tag-face
   '((t (:inherit warning)))
-  "Default face for org-journal tags."
+  "Default face for org-journal tags in the org buffer."
   :group 'org-journal-tags)
 
 (defface org-journal-tags-info-face
@@ -103,7 +106,7 @@ The database is stored in the file, path to which is set by
   :group 'org-journal-tags)
 
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
-  "A function to get the face of a tag.
+  "A function to get a face of a tag.
 
 The only argument is the tag string.  The default one just returs
 `org-journal-tags-tag-face'."
@@ -120,7 +123,7 @@ different cases."
 
 (defcustom org-journal-tags-format-new-tag-function
   #'org-journal-tags--format-new-tag-default
-  "A function to format a newly inserted org journal tag.
+  "A function to format the newly inserted org journal tag.
 
 Used by `org-journal-tags-insert-tag' and
 `org-journal-tags-set-prop'."
@@ -128,7 +131,7 @@ Used by `org-journal-tags-insert-tag' and
   :group 'org-journal-tags)
 
 (defcustom org-journal-tags-query-ascending-sort nil
-  "If t, do ascending sort for the query results."
+  "If t, sort the query results in ascending order."
   :type 'boolean
   :group 'org-journal-tags)
 
@@ -147,15 +150,18 @@ Used by `org-journal-tags-insert-tag' and
   :group 'org-journal-tags)
 
 (defcustom org-journal-tags-date-group-func #'org-journal-tags--group-date-default
-  "A function to group dates in barchart and elsewhere.
+  "A function to group dates in barcharts.
 
-Take a loot at `org-journal-tags--group-refs-by-date' for more
+Take a look at `org-journal-tags--group-refs-by-date' for more
 detail."
   :type 'function
   :group 'org-journal-tags)
 
 (defconst org-journal-tags-query-buffer-name "*org-journal-query*"
   "Default buffer name for org-journal-tags quieries.")
+
+(defconst org-journal-tags-status-buffer-name "*org-journal-tags*"
+  "Default buffer name for org-journal-tags status.")
 
 (defun org-journal-tags--format-new-tag-default (tag)
   "Default formatting function for new org journal tags.
@@ -164,9 +170,7 @@ TAG is a string with the tag name."
   (format "[[org-journal:%s][#%s]]" tag tag))
 
 (defun org-journal-tags--face-default (&rest _)
-  "Return the default tag face.
-
-TAG is a string with the tag name."
+  "Return the default tag face."
   'org-journal-tags-tag-face)
 
 (defun org-journal-tags--group-date-default (date)
@@ -180,7 +184,7 @@ DATE is a UNIX timestamp."
   "The current query results in the org-journal-tags query buffer.")
 
 (defvar-local org-journal-tags--query-params nil
-  "Query params in the org-jorunal-tags query buffer or elsewhere.
+  "Query params in the org-journal-tags query buffer or elsewhere.
 
 Overriding this variable can be used to change the starting value
 of infixes in `org-journal-tags-transient-query'.")
@@ -198,12 +202,12 @@ The properties are:
   (dates (make-hash-table)))
 
 (cl-defstruct (org-journal-tag-reference (:constructor org-journal-tag-reference--create))
-  "A structure that holds one reference to an org journal tag.
+  "A structure that holds one reference to some piece of org-journal.
 
 The properties are:
-- `:ref-start': Start of the referenced region
-- `:ref-end': End of the referenced region
-- `:time': A string that holds the time of the referneced record.
+- `:ref-start': Start of the referenced region.
+- `:ref-end': End of the referenced region.
+- `:time': A string that holds the time of the reference record.
   Doesn't have to be in any particular format.
 - `:date': A timestamp with the date of the referenced record."
   ref-start ref-end time date)
@@ -274,6 +278,7 @@ record in the journal."
   (org-journal-tags-db-save)
   (setf org-journal-tags-db nil))
 
+
 ;; Org link
 
 (defun org-journal-tags--follow (tag _prefix)
@@ -283,10 +288,10 @@ record in the journal."
                             (rx "::" (* nonl) eos)
                             ""
                             tag))))))
-    ;; XXX `org-journal-tags--query-params' is used inside init-value
-    ;; methods of infixes of the `org-journal-tags-transient-query'.
-    ;; I have to idea how else to silence the "Unused lexical
-    ;; variable" warning.
+    ;; XXX `org-journal-tags--query-params' is used in the init-value
+    ;; method of infixes of the `org-journal-tags-transient-query'.  I
+    ;; have no idea how else to silence the "Unused lexical variable"
+    ;; warning.
     (ignore org-journal-tags--query-params)
     (org-journal-tags-transient-query)))
 
@@ -310,7 +315,7 @@ record in the journal."
 ;; Tags extraction and persistence
 
 (defun org-journal-tags--ensure-decrypted ()
-  "Ensure that the current org-journal is decrypted."
+  "Ensure that the current org-journal buffer is decrypted."
   (when org-journal-enable-encryption
     (save-excursion
       (goto-char (point-min))
@@ -318,7 +323,7 @@ record in the journal."
         (org-decrypt-entry)))))
 
 (defun org-journal-tags--links-get-tag (link)
-  "Get the tag name from LINK.
+  "Get tag name from LINK.
 
 LINK is either Org element or string."
   (replace-regexp-in-string
@@ -327,7 +332,9 @@ LINK is either Org element or string."
    (or (org-element-property :path link) link)))
 
 (defun org-journal-tags--get-element-parent (elem type)
-  "Get the first parent of ELEM of the type TYPE."
+  "Get the first parent of ELEM of the type TYPE.
+
+ELEM is an org element."
   (cl-loop while elem do (setq elem (org-element-property :parent elem))
            if (eq (org-element-type elem) type)
            return elem))
@@ -357,7 +364,7 @@ from `org-element-parse-buffer'."
         (list begin (1- end))))))
 
 (defun org-journal-tags-get-link-region-at-point ()
-  "Select region referenced by org-jounral-tag link.
+  "Select region referenced by the org-journal-tags link.
 
 The point should be exactly at the beginning of the link."
   (interactive)
@@ -729,8 +736,8 @@ list of tags to remove."
   "Automatically update the org-journal-tags database.
 
 This does two things:
-- sets up individual org journal buffers to update to database after
-  save.
+- sets up individual org journal buffers to update to the database
+  after save.
 - sets up saving the database on exit from Emacs.
 
 If you don't want to turn this on, you can manually call:
@@ -752,17 +759,14 @@ If you don't want to turn this on, you can manually call:
 (defun org-journal-tags--query-construct-dates-hash (refs &optional push-func check-func)
   "Put REFS in a nested hash table by date and time.
 
-REFS ia list of `org-journal-tag-reference'.
+REFS is a list of `org-journal-tag-reference'.
 
-PUSH-FUNC is function that receives two arguments: a list of
+PUSH-FUNC is a function that receives two arguments: a list of
 references within the same date and time and a new reference to
 be added to the list.
 
 CHECK-FUNC is a function that receives two arguments - date and
-time - and determines if they are to put in hash.
-
-This is the central function in implementing set algebra on
-instances of `org-journal-tag-reference'."
+time - and determines if they should be put in the hash."
   (unless push-func
     (setq push-func
           (lambda (time-refs ref)
@@ -788,7 +792,9 @@ instances of `org-journal-tag-reference'."
   "Deconstruct DATES-HASH to the list of tag references.
 
 DATES-HASH should be in the same format as returned by
-`org-journal-tags--query-construct-dates-hash'."
+`org-journal-tags--query-construct-dates-hash'.
+
+The returned value is a list of `org-journal-tag-reference'."
   (cl-loop for times-hash being the hash-values of dates-hash
            append (cl-loop for refs being the hash-values of times-hash
                            append refs)))
@@ -803,7 +809,7 @@ DATES-HASH should be in the same format as returned by
       (and (<= b1 a1) (<= a1 b2))))
 
 (defun org-journal-tags--query-merge-refs-push (time-refs ref)
-  "Smartly add REF to the list of org-journal reference.
+  "Add REF to the list of org-journal references.
 
 REF is an instance of `org-journal-tag-reference', TIME-REFS is a
 list of such instances.  All references are assumed to be of
@@ -815,7 +821,7 @@ vice versa, a larger reference will be kept.
 If REF intersects with some reference in TIME-REFS, an
 intersection of the two references will be saved.
 
-Thus, after this operation there will be no intersection between
+Thus, after this operation, there will be no intersection between
 references."
   (or (cl-loop
        with ref-start = (org-journal-tag-reference-ref-start ref)
@@ -894,7 +900,7 @@ REFS-1 and REFS-2 are lists of instances of
   "Exclude all intersections of TARGET-REF with REFS from TARGET-REF.
 
 REFS is a list of `org-journal-tag-reference', TARGET-REF is one
-instance of `org-journal-tag-reference'.  All referneces are
+instance of `org-journal-tag-reference'.  All references are
 assumed to have one date and time.
 
 The return value is a list of `org-journal-tag-reference'.  The
@@ -1057,8 +1063,9 @@ REFS-1 and REFS-2 are lists of `org-journal-tag-reference'."
 
 REFS is a list of `org-journal-tag-reference'.
 
-If ASCENDING is non-nil, do ascending sort on dates (i.e. the
-earliest date comes first.).  Times are always sorted ascending."
+If ASCENDING is non-nil, do sort dates in ascending
+order (i.e. the earliest date comes first.).  Times are always
+sorted ascending."
   (seq-sort
    (lambda (ref-1 ref-2)
      (let ((date-1 (org-journal-tag-reference-date ref-1))
@@ -1073,7 +1080,7 @@ earliest date comes first.).  Times are always sorted ascending."
 (defun org-journal-tags--query-get-date-list (start-date end-date)
   "List all the dates for records.
 
-As everywhere in org-journal-tags, dates are returned in UNIX
+As everywhere in org-journal-tags, dates are returned in the UNIX
 timestamp format.
 
 START-DATE and END-DATE are used to trim the range of the
@@ -1090,7 +1097,7 @@ returned dates from both ends."
             (or (null end-date) (<= date end-date)))))))
 
 (defun org-journal-tags--query-get-tags-references (tag-names dates)
-  "Return all the references to required tags from the db.
+  "Return all references to required tags from the db.
 
 TAG-NAMES is a list of strings, DATES is a list of timestamps."
   (cl-loop for date in dates append
@@ -1102,8 +1109,8 @@ TAG-NAMES is a list of strings, DATES is a list of timestamps."
 (defun org-journal-tags--query-get-child-tags (parent-tag)
   "Get child org-journal tags for PARENT-TAG.
 
-A tag is considered to be a child of PARENT-TAG if it stars with
-\"<parent-tag-value>.\".  PARENT-TAG itself is also returned."
+A tag is considered to be a child of PARENT-TAG if it starts with
+\"<parent-tag-name>.\".  PARENT-TAG itself is also returned."
   (cl-loop for tag being the hash-keys of (alist-get :tags org-journal-tags-db)
            if (string-match-p
                (rx bos (literal parent-tag) (or eos (: "." (* nonl))))
@@ -1111,7 +1118,7 @@ A tag is considered to be a child of PARENT-TAG if it stars with
            collect tag))
 
 (defun org-journal-tags--query-get-tag-names (tag-names &optional children)
-  "Return the list of tag names to query.
+  "Filter and extend TAG-NAMES for the query.
 
 TAG-NAMES is a list of strings or nil.  If it's nil, a list with
 an empty string is returned, which is a root tag for every other
@@ -1121,11 +1128,16 @@ If CHIDLREN is non-nil, names of tags in TAG-NAMES and all their
 CHILDREN are returned.  Otherwise, only tags in TAG-NAMES are
 returned."
   (if tag-names
-      (seq-uniq (cl-loop for tag-name in tag-names
+      (seq-uniq
+       (cl-loop for tag-name in
+                (cl-loop for tag-name in tag-names
                          unless children collect tag-name
                          if children append
                          (org-journal-tags--query-get-child-tags
-                          tag-name)))
+                          tag-name))
+                if (gethash tag-name
+                            (alist-get :tags org-journal-tags-db))
+                collect tag-name))
     '("")))
 
 (defvar org-journal-tags--files-cache (make-hash-table :test #'equal)
@@ -1143,7 +1155,7 @@ Keys are filenames, values are the correspoinding buffer strings.")
   (clrhash org-journal-tags--files-cache))
 
 (defun org-journal-tags--extract-ref (ref)
-  "Get a string references by the reference.
+  "Get the string referenced by the REF.
 
 REF should be an instance of `org-journal-tag-reference'."
   (let ((file-name (org-journal--get-entry-path
@@ -1173,7 +1185,7 @@ REF should be an instance of `org-journal-tag-reference'."
            unless match return result))
 
 (defun org-journal-tags--string-extract-refs (regex ref string)
-  "Extact references from those paragraphs of REF than match REGEX.
+  "Extract references from those paragraphs of REF that match REGEX.
 
 STRING is a string, corresponding to REF.  It is split to
 paragraphs by two newline symbols in a row."
@@ -1199,8 +1211,8 @@ paragraphs by two newline symbols in a row."
 REFS is a list of `org-journal-tag-reference', REGEX is regular
 expression.
 
-If NARROW is non-nil, only one paragraph for the every match
-will be returned."
+If NARROW is non-nil, only one paragraph for every match will be
+returned."
   (cl-loop for ref in refs
            for text = (org-journal-tags--extract-ref ref)
            if (string-match-p regex text)
@@ -1215,14 +1227,14 @@ will be returned."
 All the keys are optional.
 
 TAG-NAMES is a list of strings with tag names to include.
-EXCLUDE-TAG-NAMES is a list of string with tag names to exclude.
+EXCLUDE-TAG-NAMES is a list of strings with tag names to exclude.
 
 START-DATE and END-DATE are UNIX timestamps that set the search
 boundaries.
 
 REGEX is a regex by which the references will be filtered.  If
 REGEX-NARROW is non-nil, each found reference will be narrowed
-only to a particular paragraph where match occured.
+only to a particular paragraph where a match occurred.
 
 If CHILDREN is non-nil, also search within all the children of TAG-NAMES.
 
@@ -1364,7 +1376,7 @@ tag."
          (widget-push-button-prefix "")
          (widget-push-button-suffix ""))
     ;; XXX Silencing the byte-compliation warnings.  These two
-    ;; wariables change the behaviou of widget-create.
+    ;; wariables change the behavior of `widget-create'.
     (ignore widget-push-button-prefix)
     (ignore widget-push-button-suffix)
     (dolist (tag-name tag-names)
@@ -1410,9 +1422,9 @@ tag."
   "Open org-journal-tags status buffer."
   (interactive)
   (org-journal-tags-db-ensure)
-  (when-let ((buffer (get-buffer "*org-journal-tags*")))
+  (when-let ((buffer (get-buffer org-journal-tags-status-buffer-name)))
     (kill-buffer buffer))
-  (let ((buffer (get-buffer-create "*org-journal-tags*")))
+  (let ((buffer (get-buffer-create org-journal-tags-status-buffer-name)))
     (with-current-buffer buffer
       (org-journal-tags--buffer-render-contents))
     (switch-to-buffer-other-window buffer)))
@@ -1421,7 +1433,7 @@ tag."
 ;; Barcharts
 
 (defun org-journal-tags--buffer-get-barchart-data (refs &optional max-length dates-list)
-  "Group REFS to a data series for a barchart.
+  "Group REFS to data series for a barchart.
 
 REFS is a list of `org-journal-tag-reference'.  MAX-LENGTH is the
 maximum length of the barchart.  It nil, (1- (windows-body-width))
@@ -1429,17 +1441,18 @@ is taken.
 
 DATES-LIST is a list of grouped dates as described in
 `org-journal-tags--group-refs-by-date'."
-  (org-journal-tags--group-refs-by-date
-   refs (or max-length (1- (window-body-width))) dates-list))
+  (when refs
+    (org-journal-tags--group-refs-by-date
+     refs (or max-length (1- (window-body-width))) dates-list)))
 
 (defun org-journal-tags--buffer-render-horizontal-barchart (data &optional max-height)
-  "Render a horizonal barchart for DATA at point.
+  "Render a horizontal barchart for DATA at the point.
 
 DATA is a list of numbers.  0 will be rendered as the first
 symbol in `org-journal-tags-barchart-symbols', the maximum number
 will be rendered as the last symbol.
 
-The maximum number can be overriden with MAX-HEIGHT is it's
+The maximum number can be overridden with MAX-HEIGHT if it's
 necessary to synchronize the height of multiple barcharts."
   (let* ((max-datum (or max-height (max 1 (seq-max data))))
          (max-symbol-index (1- (length org-journal-tags-barchart-symbols))))
@@ -1452,10 +1465,10 @@ necessary to synchronize the height of multiple barcharts."
       'face 'org-journal-tags-barchart-face))))
 
 (defun org-journal-tags--buffer-render-vertical-barchart (groups &optional max-width)
-  "Render a vertical barchar for GROUPS at point.
+  "Render a vertical barchart for GROUPS at the point.
 
 GROUPS is an output of `org-journal-tags--group-refs-by-date'.
-This function plots a bar for number of refreneces in each
+This function plots a bar for the count of references in each
 group.
 
 MAX-WIDTH overrides the maximum number of references per group.
@@ -1604,8 +1617,8 @@ REFS is a list org `org-journal-tag-reference'."
               (propertize (number-to-string (length refs))
                           'face 'org-journal-tags-info-face)
               "\n")
-      (magit-insert-section (org-journal-tags-query-barchart nil t)
-        (let ((groups (org-journal-tags--buffer-get-barchart-data refs)))
+      (when-let ((groups (org-journal-tags--buffer-get-barchart-data refs)))
+        (magit-insert-section (org-journal-tags-query-barchart nil t)
           (org-journal-tags--buffer-render-horizontal-barchart
            (mapcar
             (lambda (group) (length (alist-get :refs (cdr group))))
@@ -1668,7 +1681,7 @@ converted to a proper plist with
 
 The starting values can be get from the
 `org-journal-tags--query-params' variable, which can be made
-buffer-local in certain org-journal-tags buffer or overriden with
+buffer-local in certain org-journal-tags buffer or overridden with
 lexical binding.")
 
 (defclass org-journal-tags--transient-switch-with-variable (transient-switch)
@@ -1854,7 +1867,7 @@ VALUES should be an alist of transient values."
   "Process the query results before rendering them in the buffer.
 
 The macro runs a query for the parameters extracted from the
-current transient, put results into the RES variable and makes in
+current transient, put results into the RES variable, and makes in
 available to the BODY, which can process the variable however necessary."
   `(let* ((params (org-journal-tags--transient-extract-values))
           (refs (apply #'org-journal-tags-query
