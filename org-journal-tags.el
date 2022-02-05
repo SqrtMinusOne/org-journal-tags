@@ -6,7 +6,7 @@
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
 ;; Version: 0.1.0
 ;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0") (transient "0.3.7"))
-;; Homepage: https://github.com/SqrtMinusOne/org-journal-s.el
+;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags.el
 
 ;; This file is NOT part of GNU Emacs.
 
@@ -1321,17 +1321,61 @@ the rest are date numbers.  Such a list is constructed by
 
 ;; Status buffer
 
+(defmacro org-journal-tags--with-close-status (&rest body)
+  "Create an interactive lambda that closes the status buffer.
+
+BODY is put in that lambda."
+  `(lambda ()
+     (interactive)
+     (when (eq major-mode 'org-journal-tags-status-mode)
+       (quit-window t))
+     ,@body))
+
 (defvar org-journal-tags-status-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
+    (define-key map (kbd "s") #'org-journal-tags-transient-query)
+    (define-key map (kbd "n") (org-journal-tags--with-close-status
+                               (call-interactively
+                                #'org-journal-new-entry)))
+    (define-key map (kbd "o") (org-journal-tags--with-close-status
+                               (org-journal-open-current-journal-file)))
+    (define-key map (kbd "?") #'org-journal-tags--status-transient-help)
     (when (fboundp #'evil-define-key*)
       (evil-define-key* 'normal map
         (kbd "<tab>") #'magit-section-toggle
+        "s" #'org-journal-tags-transient-query
+        "n" (org-journal-tags--with-close-status
+             (call-interactively
+              #'org-journal-new-entry))
+        "o" (org-journal-tags--with-close-status
+             (org-journal-open-current-journal-file))
+        "?" #'org-journal-tags--status-transient-help
         "q" (lambda ()
               (interactive)
               (quit-window t))))
     map)
   "A keymap for `org-journal-tags-status-mode'.")
+
+(transient-define-prefix org-journal-tags--status-transient-help ()
+  "Commands in the status buffer."
+  ["Section commands"
+   ("<tab>" "Toggle section" magit-section-toggle)
+   ("M-1" "Show level 1" magit-section-show-level-1-all)
+   ("M-2" "Show level 2" magit-section-show-level-2-all)]
+  ["Org Journal"
+   ("s" "New query" org-journal-tags-transient-query)
+   ("n" "New journal entry" (lambda nil
+                              (interactive)
+                              (when (eq major-mode 'org-journal-tags-status-mode)
+                                (quit-window t))
+                              (call-interactively #'org-journal-new-entry)))
+   ("o" "Current journal entry" (lambda ()
+                                  (interactive)
+                                  (when (eq major-mode 'org-journal-tags-status-mode)
+                                    (quit-window t))
+                                  (org-journal-open-current-journal-file)))
+   ("q" "Quit" transient-quit-one)])
 
 (define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
   "A major mode to display the org-journal-tags status buffer.")
@@ -1358,23 +1402,24 @@ the rest are date numbers.  Such a list is constructed by
 
 (defun org-journal-tags--get-all-tag-references (tag-name)
   "Extract all references to TAG-NAME from the database."
-  (cl-loop for refs being the hash-values of
-           (org-journal-tag-dates
-            (gethash tag-name (alist-get :tags org-journal-tags-db)))
-           append refs))
+  (when (gethash tag-name (alist-get :tags org-journal-tags-db))
+    (cl-loop for refs being the hash-values of
+             (org-journal-tag-dates
+              (gethash tag-name (alist-get :tags org-journal-tags-db)))
+             append refs)))
 
 (defun org-journal-tags--buffer-render-tag-buttons ()
   "Render tag buttons for the org-journal-tags status buffer.
 
 This function creates a button and a horizontal barchart for each
 tag."
-  (let* ((tag-names (seq-sort #'string-lessp (org-journal-tags--list-tags)))
-         (dates-list (org-journal-tags--get-dates-list
-                      (org-journal-tags--query-sort-refs
-                       (org-journal-tags--get-all-tag-references ""))))
-         (max-tag-name (seq-max (mapcar #'length tag-names)))
-         (widget-push-button-prefix "")
-         (widget-push-button-suffix ""))
+  (when-let* ((tag-names (seq-sort #'string-lessp (org-journal-tags--list-tags)))
+              (dates-list (org-journal-tags--get-dates-list
+                           (org-journal-tags--query-sort-refs
+                            (org-journal-tags--get-all-tag-references ""))))
+              (max-tag-name (seq-max (mapcar #'length tag-names)))
+              (widget-push-button-prefix "")
+              (widget-push-button-suffix ""))
     ;; XXX Silencing the byte-compliation warnings.  These two
     ;; wariables change the behavior of `widget-create'.
     (ignore widget-push-button-prefix)
@@ -1382,10 +1427,11 @@ tag."
     (dolist (tag-name tag-names)
       (widget-create 'push-button
                      :notify (lambda (widget &rest _)
-                               (setq-local org-journal-tags--query-params
-                                           `((:tag-names
-                                              . (,(widget-get widget :tag-name)))))
-                               (org-journal-tags-transient-query))
+                               (let ((org-journal-tags--query-params
+                                      `((:tag-names
+                                         . (,(widget-get widget :tag-name))))))
+                                 (ignore org-journal-tags--query-params)
+                                 (org-journal-tags-transient-query)))
                      :tag-name tag-name
                      (string-pad tag-name max-tag-name))
       (widget-insert " ")
@@ -1422,6 +1468,8 @@ tag."
   "Open org-journal-tags status buffer."
   (interactive)
   (org-journal-tags-db-ensure)
+  (when org-journal-tags-autosync-mode
+    (org-journal-tags-db-sync))
   (when-let ((buffer (get-buffer org-journal-tags-status-buffer-name)))
     (kill-buffer buffer))
   (let ((buffer (get-buffer-create org-journal-tags-status-buffer-name)))
@@ -1530,9 +1578,7 @@ That can be used to scale multiple barcharts the same way."
   ["Section commands"
    ("<tab>" "Toggle section" magit-section-toggle)
    ("M-1" "Show level 1" magit-section-show-level-1-all)
-   ("M-2" "Show level 2" magit-section-show-level-2-all)
-   ("M-3" "Show level 3" magit-section-show-level-3-all)
-   ("M-4" "Show level 4" magit-section-show-level-4-all)]
+   ("M-2" "Show level 2" magit-section-show-level-2-all)]
   ["General commands"
    ("s" "Update the query" org-journal-tags-transient-query)
    ("r" "Refresh buffer" org-journal-tags--query-refresh)
@@ -1884,6 +1930,8 @@ available to the BODY, which can process the variable however necessary."
 (transient-define-suffix org-journal-tags--transient-exec-new-query ()
   :description "Run query"
   (interactive)
+  (when (eq major-mode 'org-journal-tags-status-mode)
+    (quit-window t))
   (org-journal-tags--render-query-refs refs))
 
 (transient-define-suffix org-journal-tags--transient-query-intersection ()
