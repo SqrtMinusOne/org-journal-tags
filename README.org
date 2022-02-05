@@ -1,1 +1,62 @@
 #+TITLE: org-journal-tags
+
+A package to make sense of +my life+ [[https://github.com/bastibe/org-journal][org-journal]] records.
+
+The package adds the =org-journal:= link type to Org Mode. When placed in an org-journal file, it serves as a "tag" that references one or many paragraphs in the section or the entire section. These tags are aggregated in the database that can be queried in various ways.
+
+* Installation
+As the package isn’t yet available anywhere but in this repository, you can clone the repository, add it to the load-path and require the package. My preferred way is =use use-package= with =straight=:
+#+begin_src emacs-lisp
+(use-package org-journal-tags
+  :straight (:host github :repo "SqrtMinusOne/org-journal-tags")
+  :after (org-journal)
+  :config
+  (org-journal-tags-autosync-mode))
+#+end_src
+* Usage
+** Adding tags
+To add an inline tag, you can manually create a link of the following format:
+#+begin_example
+[[org-journal:<tag-name>][<tag-description>]]
+#+end_example
+
+Or run =M-x org-journal-tags-insert-tag= to insert a tag with a completion interface. The description is not aggregated and thus optional.
+
+The link will reference the current Org Mode paragraph. If you want to reference more paragraphs, you can set the number of paragraphs like this:
+#+begin_example
+[[org-journal:<tag-name>::<number-of-paragraphs>][<tag-description>]]
+#+end_example
+
+Run =M-x org-journal-tags-link-get-region-at-point= to select the referenced region of the buffer.
+
+To add a tag to the entire section, run =M-x org-journal-tags-prop-set=, which will create or update the =Tags= property in the property drawer of the current time section. This command features a notmuch-like UI, i.e. completing read for multiple entries, where =+<tag>= adds a tag and =-<tag>= deletes a tag.
+
+** Database
+The package stores tags and references to these tags in a database.
+
+=org-journal-tags-autosync-mode= enables synchronizing the database at the moment of saving of the org-journal buffer. You can also run the synchronization manually:
+- =M-x org-journal-tags-process-buffer= to process the current buffer.
+- =M-x org-journal-tags-db-sync= to sync changed org-journal files in the filesystem.
+
+The same mode enables saving the database on killing Emacs, but you can always run =M-x org-journal-tags-db-save= manually.
+
+=M-x org-journal-tags-db-unload= saves and unloads the database from the memory, =M-x org-journal-tags-db-reset= creates a new database.
+
+** Status buffer
+=M-x org-journal-tags-status= opens the status buffer with some statistics about the journal and tags. Press =?= to see the available keybindings.
+
+Pressing =RET= on a tag name in the "All tags" section should open a query buffer set to return all references for this tag.
+** Querying
+Pressing =s= in the status buffer or running =M-x org-journal-tags-transient-query= opens a [[https://magit.vc/manual/transient/][transient.el]] buffer with query settings.
+
+- *Include tags* filters the references so that each reference had at least one of these tags.
+- *Exclude tags* filters the references so that each reference didn't have any of these tags.
+- *Include children* includes child tags to the previous two lists.
+- *Start date* and *End date* filter the references by date.
+- *Regex* filter the references by a regular expression
+- *Narrow to regex* makes it so that each reference had only paragraphs that have a regex match.
+- *Sort* sorts the result in ascending order. It's descending by default.
+
+Pressing =RET= or =e= starts the query. Each file is cached on the first appearance, so the subsequent queries in the session are much faster.
+
+After the query completes, it opens the results buffer. Press =?= to see the available keybindings there.
