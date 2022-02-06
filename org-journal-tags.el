@@ -1364,6 +1364,7 @@ BODY is put in that lambda."
     (define-key map (kbd "o") (org-journal-tags--with-close-status
                                (org-journal-open-current-journal-file)))
     (define-key map (kbd "?") #'org-journal-tags--status-transient-help)
+    (define-key map (kbd "RET") #'widget-button-press)
     (define-key map (kbd "q") (lambda ()
                                 (interactive)
                                 (quit-window t)))
