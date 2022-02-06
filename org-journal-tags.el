@@ -1857,6 +1857,8 @@ the minibuffer."
     (if (string-match-p (rx "(rx") value)
         (condition-case err
             (eval (car (read-from-string value)))
+          ;; XXX `error' indeed takes an f-string, but here error is
+          ;; just a symbol, not a function.
           (error (format "Error: %s" (prin1-to-string err))))
       value)))
 
