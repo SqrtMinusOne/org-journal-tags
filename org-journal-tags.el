@@ -1364,6 +1364,9 @@ BODY is put in that lambda."
     (define-key map (kbd "o") (org-journal-tags--with-close-status
                                (org-journal-open-current-journal-file)))
     (define-key map (kbd "?") #'org-journal-tags--status-transient-help)
+    (define-key map (kbd "q") (lambda ()
+                                (interactive)
+                                (quit-window t)))
     (when (fboundp #'evil-define-key*)
       (evil-define-key* 'normal map
         (kbd "<tab>") #'magit-section-toggle
@@ -1461,7 +1464,8 @@ tag."
          (org-journal-tags--get-all-tag-references tag-name)
          (- (window-body-width) max-tag-name 2)
          dates-list)))
-      (widget-insert "\n"))))
+      (widget-insert "\n"))
+    (widget-setup)))
 
 (defun org-journal-tags--buffer-render-contents ()
   "Render the contents of the org-journal-tags status buffer."
@@ -1581,6 +1585,9 @@ That can be used to scale multiple barcharts the same way."
     (define-key map (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point)
     (define-key map (kbd "s") #'org-journal-tags-transient-query)
     (define-key map (kbd "r") #'org-journal-tags--query-refresh)
+    (define-key map (kbd "q") (lambda ()
+                                (interactive)
+                                (quit-window t)))
     (when (fboundp #'evil-define-key*)
       (evil-define-key* '(normal motion) map
         (kbd "<tab>") #'magit-section-toggle
