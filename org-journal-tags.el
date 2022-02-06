@@ -1441,13 +1441,7 @@ tag."
               (dates-list (org-journal-tags--get-dates-list
                            (org-journal-tags--query-sort-refs
                             (org-journal-tags--get-all-tag-references ""))))
-              (max-tag-name (seq-max (mapcar #'length tag-names)))
-              (widget-push-button-prefix "")
-              (widget-push-button-suffix ""))
-    ;; XXX Silencing the byte-compliation warnings.  These two
-    ;; wariables change the behavior of `widget-create'.
-    (ignore widget-push-button-prefix)
-    (ignore widget-push-button-suffix)
+              (max-tag-name (seq-max (mapcar #'length tag-names))))
     (dolist (tag-name tag-names)
       (widget-create 'push-button
                      :notify (lambda (widget &rest _)
@@ -1472,6 +1466,8 @@ tag."
   "Render the contents of the org-journal-tags status buffer."
   (let ((inhibit-read-only t))
     (erase-buffer)
+    (setq-local widget-push-button-prefix "")
+    (setq-local widget-push-button-suffix "")
     (org-journal-tags-status-mode)
     (magit-insert-section (org-journal-tags-info)
       (magit-insert-section (org-journal-tags)
