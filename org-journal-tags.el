@@ -60,6 +60,7 @@
 (require 'subr-x)
 (require 'transient)
 (require 'widget)
+(require 'wid-edit)
 
 
 ;; XXX No idea why the byte compiler doesn't see the function and
