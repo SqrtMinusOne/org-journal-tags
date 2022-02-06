@@ -25,7 +25,29 @@
 
 ;;; Commentary:
 
-;; TODO
+;; The package adds the =org-journal:= link type to Org Mode.  When
+;; placed in an org-journal file, it serves as a "tag" that references
+;; one or many paragraphs of the journal or the entire section.  These
+;; tags are aggregated in the database that can be queried in various
+;; ways.
+;;
+;; The tag format is as follows:
+;; [[org-journal:<tag-name>::<number-of-paragraphs>][<tag-description>]]
+;; where the "::<number-of-paragraphs>" part is optional.
+;;
+;; Enabling `org-journal-tags-autosync-mode' syncronizes these tags
+;; with the database at the moment of saving the org-journal buffer.
+;;
+;; Running `org-journal-tags-status' provides a status buffer with
+;; some statistics about the journal and the used tags.  Running
+;; `org-journal-tags-transient-query' opens a query constructor to
+;; retrieve parts of journal referenced by a particular tag, regular
+;; expression, etc.
+;;
+;; Also take a look at the package README at
+;; <https://github.com/SqrtMinusOne/org-journal-tags> for more
+;; information.
+
 
 ;;; Code:
 (require 'cl-lib)
@@ -1982,7 +2004,35 @@ available to the BODY, which can process the variable however necessary."
            collect (oset suffix value nil)))
 
 (transient-define-prefix org-journal-tags-transient-query ()
-  "Query Org Journal."
+  "Construct a query for Org Journal Tags.
+
+The options are as follows:
+- \"Include tags\" filters the references so that each reference had
+  at least one of these tags.
+- \"Exclude tags\" filters the references so that each reference
+  didn't have any of these tags.
+- \"Include children\" includes child tags to the previous two lists.
+- \"Start date\" and \"End date*\" filter the references by date.
+- \"Regex\" filter the references by a regular expression.  It can be a
+  string or `rx' expression (it just has to start with =(rx= in this
+  case).
+- \"Narrow to regex\" makes it so that each reference had only
+  paragraphs that have a regex match.
+- \"Sort\" sorts the result in ascending order.  It's descending by
+  default.
+
+If opened inside the query results buffer, the constructor has 4
+additional commands, corresponding to set operations:
+- \"Union\".  Add records of the new query to the displayed records.
+- \"Intersection\".  Leave only those records that are both displayed
+  and in the new query.
+- \"Difference from current\".  Exclude records of the new query from
+  the displayed records.
+- \"Difference to current\".  Exclude displayed records from ones of
+  the new query.
+
+Thus it is possible to make any query that can be described as a
+sequence of such set operations."
   ["Tags"
    ("ti" org-journal-tags--transient-include-tags)
    ("te" org-journal-tags--transient-exclude-tags)

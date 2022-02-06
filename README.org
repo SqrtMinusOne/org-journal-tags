@@ -66,11 +66,12 @@ Pressing =RET= on a tag name in the "All tags" section should open a query buffe
 
 Pressing =s= in the status buffer or running =M-x org-journal-tags-transient-query= opens a [[https://magit.vc/manual/transient/][transient.el]] buffer with query settings.
 
+The options are as follows:
 - *Include tags* filters the references so that each reference had at least one of these tags.
 - *Exclude tags* filters the references so that each reference didn't have any of these tags.
 - *Include children* includes child tags to the previous two lists.
 - *Start date* and *End date* filter the references by date.
-- *Regex* filter the references by a regular expression
+- *Regex* filter the references by a regular expression. It can be a string or [[https://www.gnu.org/software/emacs/manual/html_node/elisp/Rx-Notation.html][rx]] expression (it just has to start with =(rx= in this case).
 - *Narrow to regex* makes it so that each reference had only paragraphs that have a regex match.
 - *Sort* sorts the result in ascending order. It's descending by default.
 
