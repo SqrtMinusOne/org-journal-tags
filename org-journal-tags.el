@@ -739,6 +739,7 @@ list of tags to remove."
 (defun org-journal-tags-insert-tag ()
   "Insert org-journal tag at point."
   (interactive)
+  (org-journal-tags-db-ensure)
   (insert
    (let ((name (completing-read
                 "Tag: "
