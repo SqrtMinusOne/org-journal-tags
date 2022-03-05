@@ -247,7 +247,11 @@ The properties are:
     (with-temp-buffer
       (insert-file-contents org-journal-tags-db-file)
       (goto-char (point-min))
-      (setf org-journal-tags-db (read (current-buffer))))))
+      (condition-case err
+          (setf org-journal-tags-db (read (current-buffer)))
+        (error (progn
+                 (message "Recreating the database because of an error")
+                 (setf org-journal-tags-db (org-journal-tags-db--empty))))))))
 
 (defun org-journal-tags-db-ensure ()
   "Ensure that the database has been loaded."
