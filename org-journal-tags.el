@@ -94,13 +94,19 @@
 The database is an alist with two keys:
 - `:tags' is a hash-map with tag names as keys and instances of
   `org-journal-tag' as values.
-- `:files' is also a hash-map with org-journal files as keys and
+- `:files' is a hash-map with org-journal files as keys and
   timestamps of their last update as values.  This is used to keep
   track of updates in the filesystem, for instance when journal files
   are created on some other machine.
+- `:dates' is a hash-map with dates as keys and instances of
+  `org-journal-timestamp' as values.
+- `:files-dates' is a hash-map with org-journal files as keys and
+  lists of references dates as values.  Used to speed up recalculation
+  the `:dates' field.
+- `:version' is the database version number.
 
 Everywhere in this packages dates are used in the form of UNIX
-timestamp, e.g. such as retunrned by (time-convert nil 'integer).
+timestamp, e.g. such as returned by (time-convert nil 'integer).
 
 The database is stored in the file, path to which is set by
 `org-journal-tags-db-file'.
@@ -235,18 +241,29 @@ The properties are:
 - `:date': A timestamp with the date of the referenced record."
   ref-start ref-end time date)
 
-(cl-defstruct (org-journal-tag-timestamp (:constructor org-journal-tag-timestamp--create))
+(cl-defstruct (org-journal-timestamp (:constructor org-journal-timestamp--create))
   "A structure that holds one timestamp reference in org-journal.
 
 The properties are:
 - `:ref': an instance of `org-journal-tag-reference'.
-- `:timestamp': UNIX timestamp."
-  ref timestamp)
+- `:datetime': UNIX timestamp."
+  ref datetime)
 
 (defun org-journal-tags-db--empty ()
   "Create an empty org-journal-tags database."
   `((:tags . ,(make-hash-table :test #'equal))
-    (:files . ,(make-hash-table :test #'equal))))
+    (:files . ,(make-hash-table :test #'equal))
+    (:dates . ,(make-hash-table))
+    (:files-dates . ,(make-hash-table :test #'equal))
+    (:version 2)))
+
+(defun org-journal-tags-db--migrate ()
+  "Migrate the org-journal-tags database."
+  (let ((version (alist-get :version org-journal-tags-db)))
+    (cond
+     ((null version)
+      (message "Database has been reset due to update")
+      (setf org-journal-tags-db (org-journal-tags-db--empty))))))
 
 (defun org-journal-tags-db-load ()
   "Load the org-journal-tags database from the filesystem."
@@ -255,7 +272,8 @@ The properties are:
     (with-temp-buffer
       (insert-file-contents org-journal-tags-db-file)
       (goto-char (point-min))
-      (setf org-journal-tags-db (read (current-buffer))))))
+      (setf org-journal-tags-db (read (current-buffer)))
+      (org-journal-tags-db--migrate))))
 
 (defun org-journal-tags-db-ensure ()
   "Ensure that the database has been loaded."
@@ -537,26 +555,6 @@ can repeat."
    (org-journal-tags--links-extract-inline)
    (org-journal-tags--links-extract-section t)))
 
-(defun org-journal-tags--timestamps-get-region (timestamp)
-  "Get region boundaries referenced by TIMESTAMP."
-  (save-excursion
-    (goto-char (org-element-property :begin timestamp))
-    (let ((bounds (bounds-of-thing-at-point 'sentence)))
-      (list (car bounds) (cdr bounds)))))
-
-(defun org-journal-tags--timestamps-extract ()
-  "Extract timestamps from the current org-journal buffer."
-  (org-element-map (org-element-parse-buffer) 'timestamp
-    (lambda (elem)
-      (when-let* ((region (org-journal-tags--timestamps-get-region elem))
-                  (time (time-convert
-                         (org-timestamp-to-time elem)
-                         'integer))
-                  (ref (org-journal-tags--links-extract-one elem region)))
-        (org-journal-tag-timestamp--create
-         :ref ref
-         :timestamp time)))))
-
 (defun org-journal-tags--clear-date (date)
   "Remove all references to DATE from the database."
   (maphash
@@ -611,6 +609,74 @@ of (tag-name . `org-journal-tag-reference')"
    (alist-get :files org-journal-tags-db))
   (org-journal-tags--cache-invalidate (buffer-file-name)))
 
+(defun org-journal-tags--timestamps-get-region (timestamp)
+  "Get region boundaries referenced by TIMESTAMP."
+  (save-excursion
+    (goto-char (org-element-property :begin timestamp))
+    (let ((bounds (bounds-of-thing-at-point 'sentence)))
+      (list (car bounds) (cdr bounds)))))
+
+(defun org-journal-tags--timestamps-extract ()
+  "Extract timestamps from the current org-journal buffer."
+  (org-element-map (org-element-parse-buffer) 'timestamp
+    (lambda (elem)
+      (when-let* ((region (org-journal-tags--timestamps-get-region elem))
+                  (time (time-convert
+                         (org-timestamp-to-time elem)
+                         'integer))
+                  (ref (org-journal-tags--links-extract-one elem region)))
+        (org-journal-timestamp--create
+         :ref ref
+         :datetime time)))))
+
+(defun org-journal-tags--round-datetime (datetime)
+  "Remove time part from DATETIME.
+
+DATETIME is a UNIX timestamp, such as returned by `time-convert' with
+'integer as form."
+  (let ((time (decode-time (time-convert datetime))))
+    (setf (decoded-time-second time) 0
+          (decoded-time-minute time) 0
+          (decoded-time-hour time) 0)
+    (time-convert (encode-time time) 'integer)))
+
+(defun org-journal-tags--timestamps-cleanup ()
+  "Remove timestamp references of the current file from database."
+  (cl-loop for date in (gethash (buffer-file-name)
+                                (alist-get :files-dates org-journal-tags-db))
+           do (puthash date
+                       (seq-filter
+                        (lambda (timestamp)
+                          (let ((file-name (org-journal--get-entry-path
+                                            (org-journal-tag-reference-date
+                                             (org-journal-timestamp-ref timestamp)))))
+                            (not (string-equal file-name (buffer-file-name)))))
+                        (gethash date (alist-get :dates org-journal-tags-db)))
+                       (alist-get :dates org-journal-tags-db)))
+  (remhash (buffer-file-name) (alist-get :files-dates org-journal-tags-db)))
+
+(defun org-journal-tags--timestamps-store (timestamps)
+  "Store timestamp references in the org-journal-tags database.
+
+TIMESTAMPS is a list of instances of `org-journal-timestamp'.  The
+list has to include all the timestamps from a particular file, i.e. it
+can't include part of the timestamps in order to work correctly.
+
+Also, `org-journal-tags--timestamps-cleanup' has to be called before
+this function for each processed file."
+  (cl-loop for timestamp in timestamps
+           for file-name = (org-journal--get-entry-path
+                            (org-journal-tag-reference-date
+                             (org-journal-timestamp-ref timestamp)))
+           for date = (org-journal-tags--round-datetime
+                       (org-journal-timestamp-datetime timestamp))
+           do (push date
+                    (gethash file-name
+                             (alist-get :files-dates org-journal-tags-db)))
+           do (push timestamp
+                    (gethash date
+                             (alist-get :dates org-journal-tags-db)))))
+
 ;;;###autoload
 (defun org-journal-tags-process-buffer (&optional process-file)
   "Update the org-journal-tags with the current buffer.
@@ -623,6 +689,9 @@ called interactively."
   (org-journal-tags-db-ensure)
   (org-journal-tags--links-store
    (org-journal-tags--links-extract))
+  (org-journal-tags--timestamps-cleanup)
+  (org-journal-tags--timestamps-store
+   (org-journal-tags--timestamps-extract))
   (when process-file
     (org-journal-tags--record-file-processed)))
 
