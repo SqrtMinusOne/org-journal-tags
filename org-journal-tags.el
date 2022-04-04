@@ -407,6 +407,34 @@ The point should be exactly at the beginning of the link."
       (goto-char (nth 1 region))
       (activate-mark))))
 
+(defun org-journal-tags--links-extract-one (elem region)
+  "Locate time and date for ELEM and make `org-journal-tag-reference'.
+
+ELEM is a parent of the element under question, be it a link or a
+timestamp.
+
+REGION is a list of a form (<ref-start> <ref-start>) that is passed to
+the corresponding properties of `org-journal-tags-reference'."
+  (let ((date-re (org-journal--format->regex
+                  org-journal-created-property-timestamp-format))
+        time
+        date)
+    (cl-loop while elem do (setq elem (org-element-property :parent elem))
+             when (and (eq (org-element-type elem) 'headline)
+                       (= (org-element-property :level elem) 2))
+             do (setq time (org-element-property :raw-value elem))
+             when (and (eq (org-element-type elem) 'headline)
+                       (= (org-element-property :level elem) 1))
+             do (let ((created (org-element-property :CREATED elem)))
+                  (setq date
+                        (org-journal-tags--parse-journal-created
+                         created date-re))))
+    (org-journal-tag-reference--create
+     :ref-start (nth 0 region)
+     :ref-end (nth 1 region)
+     :time time
+     :date date)))
+
 (defun org-journal-tags--links-extract-inline ()
   "Extract inline links from the current org-journal buffer.
 
@@ -418,32 +446,13 @@ second case, it's the current paragraph and ref-number of next
 paragraphs."
   (org-element-map (org-element-parse-buffer) 'link
     (lambda (link)
-      (when (string= (org-element-property :type link) "org-journal")
-        (let ((tag (org-journal-tags--links-get-tag link))
-              (region (org-journal-tags--links-inline-get-region link))
-              (elem (org-element-property :parent link))
-              (date-re (org-journal--format->regex
-                        org-journal-created-property-timestamp-format))
-              time
-              date)
-          (when (org-journal-tags--valid-tag-p tag)
-            (cl-loop while elem do (setq elem (org-element-property :parent elem))
-                     when (and (eq (org-element-type elem) 'headline)
-                               (= (org-element-property :level elem) 2))
-                     do (setq time (org-element-property :raw-value elem))
-                     when (and (eq (org-element-type elem) 'headline)
-                               (= (org-element-property :level elem) 1))
-                     do (let ((created (org-element-property :CREATED elem)))
-                          (setq date
-                                (org-journal-tags--parse-journal-created
-                                 created date-re))))
-            (cons
-             tag
-             (org-journal-tag-reference--create
-              :ref-start (nth 0 region)
-              :ref-end (nth 1 region)
-              :time time
-              :date date))))))))
+      (when-let* ((_ (string= (org-element-property :type link) "org-journal"))
+                  (tag (org-journal-tags--links-get-tag link))
+                  (_ (org-journal-tags--valid-tag-p tag))
+                  (region (org-journal-tags--links-inline-get-region link))
+                  (elem (org-element-property :parent link))
+                  (ref (org-journal-tags--links-extract-one elem region)))
+        (cons tag ref)))))
 
 (defun org-journal-tags--links-parse-link-str (str)
   "Extract the tag name from a text representation of org link.
