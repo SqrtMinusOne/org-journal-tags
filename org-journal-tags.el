@@ -235,6 +235,14 @@ The properties are:
 - `:date': A timestamp with the date of the referenced record."
   ref-start ref-end time date)
 
+(cl-defstruct (org-journal-tag-timestamp (:constructor org-journal-tag-timestamp--create))
+  "A structure that holds one timestamp reference in org-journal.
+
+The properties are:
+- `:ref': an instance of `org-journal-tag-reference'.
+- `:timestamp': UNIX timestamp."
+  ref timestamp)
+
 (defun org-journal-tags-db--empty ()
   "Create an empty org-journal-tags database."
   `((:tags . ,(make-hash-table :test #'equal))
@@ -529,6 +537,25 @@ can repeat."
    (org-journal-tags--links-extract-inline)
    (org-journal-tags--links-extract-section t)))
 
+(defun org-journal-tags--timestamps-get-region (timestamp)
+  "Get region boundaries referenced by TIMESTAMP."
+  (save-excursion
+    (goto-char (org-element-property :begin timestamp))
+    (let ((bounds (bounds-of-thing-at-point 'sentence)))
+      (list (car bounds) (cdr bounds)))))
+
+(defun org-journal-tags--timestamps-extract ()
+  "Extract timestamps from the current org-journal buffer."
+  (org-element-map (org-element-parse-buffer) 'timestamp
+    (lambda (elem)
+      (when-let* ((region (org-journal-tags--timestamps-get-region elem))
+                  (time (time-convert
+                         (org-timestamp-to-time elem)
+                         'integer))
+                  (ref (org-journal-tags--links-extract-one elem region)))
+        (org-journal-tag-timestamp--create
+         :ref ref
+         :timestamp time)))))
 
 (defun org-journal-tags--clear-date (date)
   "Remove all references to DATE from the database."
