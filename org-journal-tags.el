@@ -246,8 +246,10 @@ The properties are:
 
 The properties are:
 - `:ref': an instance of `org-journal-tag-reference'.
-- `:datetime': UNIX timestamp."
-  ref datetime)
+- `:datetime': UNIX timestamp.
+- `:preview-start': Start of the preview region.
+- `:preview-end': End of the preview region."
+  ref datetime preview-start preview-end)
 
 (defun org-journal-tags-db--empty ()
   "Create an empty org-journal-tags database."
@@ -609,8 +611,8 @@ of (tag-name . `org-journal-tag-reference')"
    (alist-get :files org-journal-tags-db))
   (org-journal-tags--cache-invalidate (buffer-file-name)))
 
-(defun org-journal-tags--timestamps-get-region (timestamp)
-  "Get region boundaries referenced by TIMESTAMP."
+(defun org-journal-tags--timestamps-get-preview-region (timestamp)
+  "Get preview region boundaries referenced by TIMESTAMP."
   (save-excursion
     (goto-char (org-element-property :begin timestamp))
     (let ((bounds (bounds-of-thing-at-point 'sentence)))
@@ -620,14 +622,19 @@ of (tag-name . `org-journal-tag-reference')"
   "Extract timestamps from the current org-journal buffer."
   (org-element-map (org-element-parse-buffer) 'timestamp
     (lambda (elem)
-      (when-let* ((region (org-journal-tags--timestamps-get-region elem))
+      (when-let* ((preview-region (org-journal-tags--timestamps-get-preview-region elem))
+                  (paragraph (org-journal-tags--get-element-parent elem 'paragraph))
+                  (region (list (org-element-property :begin paragraph)
+                                (org-element-property :end paragraph)))
                   (time (time-convert
                          (org-timestamp-to-time elem)
                          'integer))
                   (ref (org-journal-tags--links-extract-one elem region)))
         (org-journal-timestamp--create
          :ref ref
-         :datetime time)))))
+         :datetime time
+         :preview-start (nth 0 preview-region)
+         :preview-end (nth 1 preview-region))))))
 
 (defun org-journal-tags--round-datetime (datetime)
   "Remove time part from DATETIME.
@@ -1349,8 +1356,27 @@ returned."
                       (list ref)
                     (org-journal-tags--string-extract-refs regex ref text))))
 
+(defun org-journal-tags--query-extract-timestamps (start-date end-date &optional return-ref)
+  "Extract timestamps from the database.
+
+START-DATE and END-DATE are borders by which timestamps are filtered.
+Can be either nil or UNIX timestamps.
+
+If RETURN-REF is non-nil, an list of instance of
+`org-journal-tag-reference' is returned.  Otherwise the instances are
+of `org-journal-timestamp'."
+  (cl-loop for date being the hash-keys of (alist-get :dates org-journal-tags-db)
+           using (hash-values timestamps)
+           if (and (or (null start-date) (>= date start-date))
+                   (or (null end-date) (<= date end-date)))
+           append (if return-ref
+                      (cl-loop for timestamp in timestamps
+                               collect (org-journal-timestamp-ref timestamp))
+                    timestamps)))
+
 (cl-defun org-journal-tags-query (&key tag-names exclude-tag-names start-date
-                                       end-date regex regex-narrow children order)
+                                       end-date regex regex-narrow children order
+                                       timestamps timestamp-start-date timestamp-end-date)
   "Query the org-journal-tags database.
 
 All the keys are optional.
@@ -1360,6 +1386,9 @@ EXCLUDE-TAG-NAMES is a list of strings with tag names to exclude.
 
 START-DATE and END-DATE are UNIX timestamps that set the search
 boundaries.
+
+If TIMESTAMPS is t, return timestamps.  TIMESTAMP-START-DATE and
+TIMESTAMP-END-DATE filter the timestamp list.
 
 REGEX is a regex by which the references will be filtered.  If
 REGEX-NARROW is non-nil, each found reference will be narrowed
@@ -1378,6 +1407,12 @@ The returned value is a list of `org-journal-tag-reference'."
     (setq results (org-journal-tags--query-get-tags-references
                    (org-journal-tags--query-get-tag-names tag-names children)
                    dates))
+    (when timestamps
+      (setq results
+            (org-journal-tags--query-intersect-refs
+             results
+             (org-journal-tags--query-extract-timestamps
+              timestamp-start-date timestamp-end-date t))))
     (when exclude-tag-names
       (setq results
             (org-journal-tags--query-diff-refs
@@ -2017,6 +2052,24 @@ OBJ is an instance of that class."
   :description "End date"
   :prompt "End date: ")
 
+(transient-define-infix org-journal-tags--transient-timestamps ()
+  :class 'org-journal-tags--transient-switch-with-variable
+  :description "Filter timestamps"
+  :argument "--timestamps"
+  :variable :timestamps)
+
+(transient-define-infix org-journal-tags--transient-timestamp-start-date ()
+  :class 'org-journal-tags--transient-date
+  :variable :timestamp-start-date
+  :description "Timestamp start date"
+  :prompt "Timestamp start date: ")
+
+(transient-define-infix org-journal-tags--transient-timestamp-end-date ()
+  :class 'org-journal-tags--transient-date
+  :variable :timestamp-end-date
+  :description "Timestamp end date"
+  :prompt "Timestamp end date: ")
+
 (transient-define-infix org-journal-tags--transient-regex-search ()
   :class 'org-journal-tags--transient-regex
   :variable :regex
@@ -2153,6 +2206,10 @@ sequence of such set operations."
   ["Date"
    ("ds" org-journal-tags--transient-start-date)
    ("de" org-journal-tags--transient-end-date)]
+  ["Timestamps"
+   ("ii" org-journal-tags--transient-timestamps)
+   ("is" org-journal-tags--transient-timestamp-start-date)
+   ("ie" org-journal-tags--transient-timestamp-end-date)]
   ["Regex"
    ("rr" org-journal-tags--transient-regex-search)
    ("rn" org-journal-tags--transient-regex-narrow)]
