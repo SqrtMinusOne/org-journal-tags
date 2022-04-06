@@ -63,18 +63,11 @@
 (require 'wid-edit)
 
 
-;; XXX No idea why the byte compiler doesn't see the function and
-;; doesn't let me (require 'cl-macs).  It is required in cl-lib though
-(declare-function cl--alist-to-plist "cl-macs")
-
 ;; XXX I want to have the compatibility with evil-mode without
 ;; requiring it, so I check whether this function is bound later in
 ;; the code.
 (declare-function evil-define-key* "evil-core")
 
-;; XXX Also no idea why the byte compiler doesn't see this
-;; function. It is obviously in subr-x
-(declare-function string-pad "subr-x")
 
 (defgroup org-journal-tags ()
   "Tagging and querying system for org-journal."
@@ -247,6 +240,40 @@ DATE is a UNIX timestamp."
 
 Overriding this variable can be used to change the starting value
 of infixes in `org-journal-tags-transient-query'.")
+
+;; Backwards compatibility
+
+;; XXX Compatibility with Emacs 27, copied from `string-pad'
+(defun org-journal-tags--string-pad (string length &optional padding start)
+  "Pad STRING to LENGTH using PADDING.
+If PADDING is nil, the space character is used.  If not nil, it
+should be a character.
+
+If STRING is longer than the absolute value of LENGTH, no padding
+is done.
+
+If START is nil (or not present), the padding is done to the end
+of the string, and if non-nil, padding is done to the start of
+the string."
+  (unless (natnump length)
+    (signal 'wrong-type-argument (list 'natnump length)))
+  (let ((pad-length (- length (length string))))
+    (if (< pad-length 0)
+        string
+      (concat (and start
+                   (make-string pad-length (or padding ?\s)))
+              string
+              (and (not start)
+                   (make-string pad-length (or padding ?\s)))))))
+
+;; XXX Compatibility with Emacs 27, copied from `cl--alist-to-plist'
+(defun org-journal-tags--alist-to-plist ()
+  "Convert alist to plist."
+  (let ((res '()))
+    (dolist (x alist)
+      (push (car x) res)
+      (push (cdr x) res))
+    (nreverse res)))
 
 ;; Data model and database
 
@@ -1639,7 +1666,7 @@ BODY is put in that lambda."
                                  (ignore org-journal-tags--query-params)
                                  (org-journal-tags-transient-query)))
                              :timestamp timestamp
-                             (format "%s %s" (string-pad (propertize date 'face 'org-date) 21) preview)))
+                             (format "%s %s" (org-journal-tags--string-pad (propertize date 'face 'org-date) 21) preview)))
             (widget-insert "\n"))
           (insert "\n"))
       (insert "No timestamps found"))))
@@ -1671,7 +1698,7 @@ tag."
                                  (ignore org-journal-tags--query-params)
                                  (org-journal-tags-transient-query)))
                      :tag-name tag-name
-                     (string-pad tag-name max-tag-name))
+                     (org-journal-tags--string-pad tag-name max-tag-name))
       (widget-insert " ")
       (org-journal-tags--buffer-render-horizontal-barchart
        (mapcar
@@ -1787,14 +1814,14 @@ That can be used to scale multiple barcharts the same way."
             for number = (length (alist-get :refs (cdr group)))
             for ticks-number = (floor (* number width-coef))
             concat (concat
-                    (propertize (string-pad (car group) max-name-width)
+                    (propertize (org-journal-tags--string-pad (car group) max-name-width)
                                 'face 'org-journal-tags-info-face)
                     " "
-                    (string-pad
+                    (org-journal-tags--string-pad
                      (format "[%d]" number)
                      4)
                     ": "
-                    (propertize (string-pad "" ticks-number ?+)
+                    (propertize (org-journal-tags--string-pad "" ticks-number ?+)
                                 'face 'org-journal-tags-barchart-face)
                     "\n"))))
 
@@ -2177,7 +2204,7 @@ OBJ is an instance of that class."
   "Make a plist acceptable to `org-journal-tags-query'.
 
 VALUES should be an alist of transient values."
-  (let ((params (cl--alist-to-plist values)))
+  (let ((params (org-journal-tags--alist-to-plist values)))
     (setq params
           (if (plist-get params :order)
               (plist-put params :order 'ascending)
