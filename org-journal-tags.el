@@ -267,8 +267,8 @@ the string."
                    (make-string pad-length (or padding ?\s)))))))
 
 ;; XXX Compatibility with Emacs 27, copied from `cl--alist-to-plist'
-(defun org-journal-tags--alist-to-plist ()
-  "Convert alist to plist."
+(defun org-journal-tags--alist-to-plist (alist)
+  "Convert ALIST to plist."
   (let ((res '()))
     (dolist (x alist)
       (push (car x) res)
@@ -531,9 +531,11 @@ second case, it's the current paragraph and ref-number of next
 paragraphs."
   (org-element-map (org-element-parse-buffer) 'link
     (lambda (link)
-      (when-let* ((_ (string= (org-element-property :type link) "org-journal"))
+      ;; XXX byte-compiler doesn't like when variables in `when-let*'
+      ;; are prefixed with `_'.
+      (when-let* ((ignore-1 (string= (org-element-property :type link) "org-journal"))
                   (tag (org-journal-tags--links-get-tag link))
-                  (_ (org-journal-tags--valid-tag-p tag))
+                  (ignore-2 (org-journal-tags--valid-tag-p tag))
                   (region (org-journal-tags--links-inline-get-region link))
                   (elem (org-element-property :parent link))
                   (ref (org-journal-tags--links-extract-one elem region)))
