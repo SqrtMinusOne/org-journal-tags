@@ -186,6 +186,36 @@ detail."
   :type 'function
   :group 'org-journal-tags)
 
+(defcustom org-journal-tags-timestamps '((:start . 0) (:end . 2678400))
+  "Whether and how to display timestamps in the status buffer.
+
+If nil, do not display.
+
+If non-nil, this has to a an alist with the following properties:
+- `:start': Start of the range for which to filter timestamps.
+  - if nil, do not filter.
+  - if integer less or equal than 31536000, set the filter value as
+    today + `:start'
+  - if integer greater or equal than 31536000, set the number as the
+    filter value
+- `:end': End of the range for which to filter timestamps.  The rules
+  are the same as for `:start'.
+
+E.g. the default value of ((:start . 0) (:end . 2678400)) filters
+timestamps between today and +31 days from today."
+  :group 'org-journal-tags
+  :type '(choice (const :tag "Do not display" nil)
+                 (repeat :tag "Display parameters"
+                         (choice
+                          (cons :tag "Start date"
+                                (const :tag "Start" :start)
+                                (choice (integer :tag "Timestamp")
+                                        (const :tag "Do not filter" nil)))
+                          (cons :tag "End date"
+                                (const :tag "End" end)
+                                (choice (integer :tag "Timestamp")
+                                        (const :tag "Do not filter" nil)))))))
+
 (defconst org-journal-tags-query-buffer-name "*org-journal-query*"
   "Default buffer name for org-journal-tags quieries.")
 
@@ -1290,10 +1320,13 @@ Keys are filenames, values are the correspoinding buffer strings.")
   (interactive)
   (clrhash org-journal-tags--files-cache))
 
-(defun org-journal-tags--extract-ref (ref)
+(defun org-journal-tags--extract-ref (ref &optional start end)
   "Get the string referenced by the REF.
 
-REF should be an instance of `org-journal-tag-reference'."
+REF should be an instance of `org-journal-tag-reference'.
+
+If START and END are not nil, they override the `:start' and `:end'
+properties of REF."
   (let ((file-name (org-journal--get-entry-path
                     (org-journal-tag-reference-date ref))))
     (unless (gethash file-name org-journal-tags--files-cache)
@@ -1310,8 +1343,8 @@ REF should be an instance of `org-journal-tag-reference'."
     (string-trim
      (substring
       (gethash file-name org-journal-tags--files-cache)
-      (1- (org-journal-tag-reference-ref-start ref))
-      (1- (org-journal-tag-reference-ref-end ref))))))
+      (1- (or start (org-journal-tag-reference-ref-start ref)))
+      (1- (or end (org-journal-tag-reference-ref-end ref)))))))
 
 (defun org-journal-tags--string-match-indices (regex string)
   "Get indices of REGEX matches in STRING."
@@ -1548,7 +1581,8 @@ BODY is put in that lambda."
 (define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
   "A major mode to display the org-journal-tags status buffer."
   :group 'org-journal-tags
-  (setq-local buffer-read-only t))
+  (setq-local buffer-read-only t)
+  (setq-local truncate-lines t))
 
 (defun org-journal-tags--buffer-render-info ()
   "Render the miscellaneous information for the status buffer."
@@ -1569,6 +1603,46 @@ BODY is put in that lambda."
     (insert (format "Total dates:   %s\n"
                     (propertize (number-to-string (length dates))
                                 'face 'org-journal-tags-info-face)))))
+
+(defun org-journal-tags--buffer-render-timestamps ()
+  "Render timestamps for the org-journal-tags status buffer."
+  (let ((start-date (alist-get :start org-journal-tags-timestamps))
+        (end-date (alist-get :end org-journal-tags-timestamps))
+        (widget-button-face 'normal))
+    (when (and start-date (<= start-date 31536000))
+      (setq start-date (+ start-date (org-journal-tags--round-datetime
+                                      (time-convert nil 'integer)))))
+    (when (and end-date (<= end-date 31536000))
+      (setq end-date (+ end-date (org-journal-tags--round-datetime
+                                  (time-convert nil 'integer)))))
+    (if-let (timestamps (org-journal-tags--query-extract-timestamps
+                         start-date end-date))
+        (progn
+          (dolist (timestamp timestamps)
+            (let ((preview (org-journal-tags--extract-ref
+                            (org-journal-timestamp-ref timestamp)
+                            (org-journal-timestamp-preview-start timestamp)
+                            (org-journal-timestamp-preview-end timestamp)))
+                  (date (format-time-string
+                         org-journal-date-format
+                         (time-convert (org-journal-timestamp-datetime timestamp)))))
+              (widget-create 'push-button
+                             :notify
+                             (lambda (widget &rest _)
+                               (let* ((timestamp (widget-get widget :timestamp))
+                                      (org-journal-tags--query-params
+                                       `((:timestamp-start-date
+                                          . ,(org-journal-timestamp-datetime timestamp))
+                                         (:timestamp-end-date
+                                          . ,(org-journal-timestamp-datetime timestamp))
+                                         (:timestamps . t))))
+                                 (ignore org-journal-tags--query-params)
+                                 (org-journal-tags-transient-query)))
+                             :timestamp timestamp
+                             (format "%s %s" (string-pad (propertize date 'face 'org-date) 21) preview)))
+            (widget-insert "\n"))
+          (insert "\n"))
+      (insert "No timestamps found"))))
 
 (defun org-journal-tags--get-all-tag-references (tag-name)
   "Extract all references to TAG-NAME from the database."
@@ -1624,6 +1698,11 @@ tag."
         (magit-insert-heading)
         (org-journal-tags--buffer-render-info))
       (insert "\n")
+      (when org-journal-tags-timestamps
+        (magit-insert-section (org-journal-timestamps)
+          (insert (propertize "Selected timestamps" 'face 'magit-section-heading))
+          (magit-insert-heading)
+          (org-journal-tags--buffer-render-timestamps)))
       (magit-insert-section (org-journal-tags)
         (insert (propertize "All tags" 'face 'magit-section-heading))
         (magit-insert-heading)
