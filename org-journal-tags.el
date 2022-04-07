@@ -4,7 +4,7 @@
 
 ;; Author: Korytov Pavel <thexcloud@gmail.com>
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0") (transient "0.3.7"))
 ;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags
 
@@ -63,18 +63,11 @@
 (require 'wid-edit)
 
 
-;; XXX No idea why the byte compiler doesn't see the function and
-;; doesn't let me (require 'cl-macs).  It is required in cl-lib though
-(declare-function cl--alist-to-plist "cl-macs")
-
 ;; XXX I want to have the compatibility with evil-mode without
 ;; requiring it, so I check whether this function is bound later in
 ;; the code.
 (declare-function evil-define-key* "evil-core")
 
-;; XXX Also no idea why the byte compiler doesn't see this
-;; function. It is obviously in subr-x
-(declare-function string-pad "subr-x")
 
 (defgroup org-journal-tags ()
   "Tagging and querying system for org-journal."
@@ -94,13 +87,19 @@
 The database is an alist with two keys:
 - `:tags' is a hash-map with tag names as keys and instances of
   `org-journal-tag' as values.
-- `:files' is also a hash-map with org-journal files as keys and
+- `:files' is a hash-map with org-journal files as keys and
   timestamps of their last update as values.  This is used to keep
   track of updates in the filesystem, for instance when journal files
   are created on some other machine.
+- `:dates' is a hash-map with dates as keys and instances of
+  `org-journal-timestamp' as values.
+- `:files-dates' is a hash-map with org-journal files as keys and
+  lists of references dates as values.  Used to speed up recalculation
+  the `:dates' field.
+- `:version' is the database version number.
 
 Everywhere in this packages dates are used in the form of UNIX
-timestamp, e.g. such as retunrned by (time-convert nil 'integer).
+timestamp, e.g. such as returned by (time-convert nil 'integer).
 
 The database is stored in the file, path to which is set by
 `org-journal-tags-db-file'.
@@ -180,6 +179,36 @@ detail."
   :type 'function
   :group 'org-journal-tags)
 
+(defcustom org-journal-tags-timestamps '((:start . 0) (:end . 1209600))
+  "Whether and how to display timestamps in the status buffer.
+
+If nil, do not display.
+
+If non-nil, this has to a an alist with the following properties:
+- `:start': Start of the range for which to filter timestamps.
+  - if nil, do not filter.
+  - if integer less or equal than 31536000, set the filter value as
+    today + `:start'
+  - if integer greater or equal than 31536000, set the number as the
+    filter value
+- `:end': End of the range for which to filter timestamps.  The rules
+  are the same as for `:start'.
+
+E.g. the default value of ((:start . 0) (:end . 1209600)) filters
+timestamps between today and +14 days from today."
+  :group 'org-journal-tags
+  :type '(choice (const :tag "Do not display" nil)
+                 (repeat :tag "Display parameters"
+                         (choice
+                          (cons :tag "Start date"
+                                (const :tag "Start" :start)
+                                (choice (integer :tag "Timestamp")
+                                        (const :tag "Do not filter" nil)))
+                          (cons :tag "End date"
+                                (const :tag "End" end)
+                                (choice (integer :tag "Timestamp")
+                                        (const :tag "Do not filter" nil)))))))
+
 (defconst org-journal-tags-query-buffer-name "*org-journal-query*"
   "Default buffer name for org-journal-tags quieries.")
 
@@ -212,6 +241,40 @@ DATE is a UNIX timestamp."
 Overriding this variable can be used to change the starting value
 of infixes in `org-journal-tags-transient-query'.")
 
+;; Backwards compatibility
+
+;; XXX Compatibility with Emacs 27, copied from `string-pad'
+(defun org-journal-tags--string-pad (string length &optional padding start)
+  "Pad STRING to LENGTH using PADDING.
+If PADDING is nil, the space character is used.  If not nil, it
+should be a character.
+
+If STRING is longer than the absolute value of LENGTH, no padding
+is done.
+
+If START is nil (or not present), the padding is done to the end
+of the string, and if non-nil, padding is done to the start of
+the string."
+  (unless (natnump length)
+    (signal 'wrong-type-argument (list 'natnump length)))
+  (let ((pad-length (- length (length string))))
+    (if (< pad-length 0)
+        string
+      (concat (and start
+                   (make-string pad-length (or padding ?\s)))
+              string
+              (and (not start)
+                   (make-string pad-length (or padding ?\s)))))))
+
+;; XXX Compatibility with Emacs 27, copied from `cl--alist-to-plist'
+(defun org-journal-tags--alist-to-plist (alist)
+  "Convert ALIST to plist."
+  (let ((res '()))
+    (dolist (x alist)
+      (push (car x) res)
+      (push (cdr x) res))
+    (nreverse res)))
+
 ;; Data model and database
 
 (cl-defstruct (org-journal-tag (:constructor org-journal-tag--create))
@@ -235,10 +298,31 @@ The properties are:
 - `:date': A timestamp with the date of the referenced record."
   ref-start ref-end time date)
 
+(cl-defstruct (org-journal-timestamp (:constructor org-journal-timestamp--create))
+  "A structure that holds one timestamp reference in org-journal.
+
+The properties are:
+- `:ref': an instance of `org-journal-tag-reference'.
+- `:datetime': UNIX timestamp.
+- `:preview-start': Start of the preview region.
+- `:preview-end': End of the preview region."
+  ref datetime preview-start preview-end)
+
 (defun org-journal-tags-db--empty ()
   "Create an empty org-journal-tags database."
   `((:tags . ,(make-hash-table :test #'equal))
-    (:files . ,(make-hash-table :test #'equal))))
+    (:files . ,(make-hash-table :test #'equal))
+    (:dates . ,(make-hash-table))
+    (:files-dates . ,(make-hash-table :test #'equal))
+    (:version 2)))
+
+(defun org-journal-tags-db--migrate ()
+  "Migrate the org-journal-tags database."
+  (let ((version (alist-get :version org-journal-tags-db)))
+    (cond
+     ((null version)
+      (message "Database has been reset due to update")
+      (setf org-journal-tags-db (org-journal-tags-db--empty))))))
 
 (defun org-journal-tags-db-load ()
   "Load the org-journal-tags database from the filesystem."
@@ -248,7 +332,9 @@ The properties are:
       (insert-file-contents org-journal-tags-db-file)
       (goto-char (point-min))
       (condition-case err
-          (setf org-journal-tags-db (read (current-buffer)))
+          (progn
+            (setf org-journal-tags-db (read (current-buffer)))
+            (org-journal-tags-db--migrate))
         (error (progn
                  (message "Recreating the database because of an error")
                  (setf org-journal-tags-db (org-journal-tags-db--empty))))))))
@@ -411,6 +497,34 @@ The point should be exactly at the beginning of the link."
       (goto-char (nth 1 region))
       (activate-mark))))
 
+(defun org-journal-tags--links-extract-one (elem region)
+  "Locate time and date for ELEM and make `org-journal-tag-reference'.
+
+ELEM is a parent of the element under question, be it a link or a
+timestamp.
+
+REGION is a list of a form (<ref-start> <ref-start>) that is passed to
+the corresponding properties of `org-journal-tags-reference'."
+  (let ((date-re (org-journal--format->regex
+                  org-journal-created-property-timestamp-format))
+        time
+        date)
+    (cl-loop while elem do (setq elem (org-element-property :parent elem))
+             when (and (eq (org-element-type elem) 'headline)
+                       (= (org-element-property :level elem) 2))
+             do (setq time (org-element-property :raw-value elem))
+             when (and (eq (org-element-type elem) 'headline)
+                       (= (org-element-property :level elem) 1))
+             do (let ((created (org-element-property :CREATED elem)))
+                  (setq date
+                        (org-journal-tags--parse-journal-created
+                         created date-re))))
+    (org-journal-tag-reference--create
+     :ref-start (nth 0 region)
+     :ref-end (nth 1 region)
+     :time time
+     :date date)))
+
 (defun org-journal-tags--links-extract-inline ()
   "Extract inline links from the current org-journal buffer.
 
@@ -422,32 +536,15 @@ second case, it's the current paragraph and ref-number of next
 paragraphs."
   (org-element-map (org-element-parse-buffer) 'link
     (lambda (link)
-      (when (string= (org-element-property :type link) "org-journal")
-        (let ((tag (org-journal-tags--links-get-tag link))
-              (region (org-journal-tags--links-inline-get-region link))
-              (elem (org-element-property :parent link))
-              (date-re (org-journal--format->regex
-                        org-journal-created-property-timestamp-format))
-              time
-              date)
-          (when (org-journal-tags--valid-tag-p tag)
-            (cl-loop while elem do (setq elem (org-element-property :parent elem))
-                     when (and (eq (org-element-type elem) 'headline)
-                               (= (org-element-property :level elem) 2))
-                     do (setq time (org-element-property :raw-value elem))
-                     when (and (eq (org-element-type elem) 'headline)
-                               (= (org-element-property :level elem) 1))
-                     do (let ((created (org-element-property :CREATED elem)))
-                          (setq date
-                                (org-journal-tags--parse-journal-created
-                                 created date-re))))
-            (cons
-             tag
-             (org-journal-tag-reference--create
-              :ref-start (nth 0 region)
-              :ref-end (nth 1 region)
-              :time time
-              :date date))))))))
+      ;; XXX byte-compiler doesn't like when variables in `when-let*'
+      ;; are prefixed with `_'.
+      (when-let* ((ignore-1 (string= (org-element-property :type link) "org-journal"))
+                  (tag (org-journal-tags--links-get-tag link))
+                  (ignore-2 (org-journal-tags--valid-tag-p tag))
+                  (region (org-journal-tags--links-inline-get-region link))
+                  (elem (org-element-property :parent link))
+                  (ref (org-journal-tags--links-extract-one elem region)))
+        (cons tag ref)))))
 
 (defun org-journal-tags--links-parse-link-str (str)
   "Extract the tag name from a text representation of org link.
@@ -524,7 +621,6 @@ can repeat."
    (org-journal-tags--links-extract-inline)
    (org-journal-tags--links-extract-section t)))
 
-
 (defun org-journal-tags--clear-date (date)
   "Remove all references to DATE from the database."
   (maphash
@@ -579,6 +675,79 @@ of (tag-name . `org-journal-tag-reference')"
    (alist-get :files org-journal-tags-db))
   (org-journal-tags--cache-invalidate (buffer-file-name)))
 
+(defun org-journal-tags--timestamps-get-preview-region (timestamp)
+  "Get preview region boundaries referenced by TIMESTAMP."
+  (save-excursion
+    (goto-char (org-element-property :begin timestamp))
+    (let ((bounds (bounds-of-thing-at-point 'sentence)))
+      (list (car bounds) (cdr bounds)))))
+
+(defun org-journal-tags--timestamps-extract ()
+  "Extract timestamps from the current org-journal buffer."
+  (org-element-map (org-element-parse-buffer) 'timestamp
+    (lambda (elem)
+      (when-let* ((preview-region (org-journal-tags--timestamps-get-preview-region elem))
+                  (paragraph (org-journal-tags--get-element-parent elem 'paragraph))
+                  (region (list (org-element-property :begin paragraph)
+                                (org-element-property :end paragraph)))
+                  (time (time-convert
+                         (org-timestamp-to-time elem)
+                         'integer))
+                  (ref (org-journal-tags--links-extract-one elem region)))
+        (org-journal-timestamp--create
+         :ref ref
+         :datetime time
+         :preview-start (nth 0 preview-region)
+         :preview-end (nth 1 preview-region))))))
+
+(defun org-journal-tags--round-datetime (datetime)
+  "Remove time part from DATETIME.
+
+DATETIME is a UNIX timestamp, such as returned by `time-convert' with
+'integer as form."
+  (let ((time (decode-time (time-convert datetime))))
+    (setf (decoded-time-second time) 0
+          (decoded-time-minute time) 0
+          (decoded-time-hour time) 0)
+    (time-convert (encode-time time) 'integer)))
+
+(defun org-journal-tags--timestamps-cleanup ()
+  "Remove timestamp references of the current file from database."
+  (cl-loop for date in (gethash (buffer-file-name)
+                                (alist-get :files-dates org-journal-tags-db))
+           do (puthash date
+                       (seq-filter
+                        (lambda (timestamp)
+                          (let ((file-name (org-journal--get-entry-path
+                                            (org-journal-tag-reference-date
+                                             (org-journal-timestamp-ref timestamp)))))
+                            (not (string-equal file-name (buffer-file-name)))))
+                        (gethash date (alist-get :dates org-journal-tags-db)))
+                       (alist-get :dates org-journal-tags-db)))
+  (remhash (buffer-file-name) (alist-get :files-dates org-journal-tags-db)))
+
+(defun org-journal-tags--timestamps-store (timestamps)
+  "Store timestamp references in the org-journal-tags database.
+
+TIMESTAMPS is a list of instances of `org-journal-timestamp'.  The
+list has to include all the timestamps from a particular file, i.e. it
+can't include part of the timestamps in order to work correctly.
+
+Also, `org-journal-tags--timestamps-cleanup' has to be called before
+this function for each processed file."
+  (cl-loop for timestamp in timestamps
+           for file-name = (org-journal--get-entry-path
+                            (org-journal-tag-reference-date
+                             (org-journal-timestamp-ref timestamp)))
+           for date = (org-journal-tags--round-datetime
+                       (org-journal-timestamp-datetime timestamp))
+           do (push date
+                    (gethash file-name
+                             (alist-get :files-dates org-journal-tags-db)))
+           do (push timestamp
+                    (gethash date
+                             (alist-get :dates org-journal-tags-db)))))
+
 ;;;###autoload
 (defun org-journal-tags-process-buffer (&optional process-file)
   "Update the org-journal-tags with the current buffer.
@@ -591,6 +760,9 @@ called interactively."
   (org-journal-tags-db-ensure)
   (org-journal-tags--links-store
    (org-journal-tags--links-extract))
+  (org-journal-tags--timestamps-cleanup)
+  (org-journal-tags--timestamps-store
+   (org-journal-tags--timestamps-extract))
   (when process-file
     (org-journal-tags--record-file-processed)))
 
@@ -1182,10 +1354,13 @@ Keys are filenames, values are the correspoinding buffer strings.")
   (interactive)
   (clrhash org-journal-tags--files-cache))
 
-(defun org-journal-tags--extract-ref (ref)
+(defun org-journal-tags--extract-ref (ref &optional start end)
   "Get the string referenced by the REF.
 
-REF should be an instance of `org-journal-tag-reference'."
+REF should be an instance of `org-journal-tag-reference'.
+
+If START and END are not nil, they override the `:start' and `:end'
+properties of REF."
   (let ((file-name (org-journal--get-entry-path
                     (org-journal-tag-reference-date ref))))
     (unless (gethash file-name org-journal-tags--files-cache)
@@ -1202,8 +1377,8 @@ REF should be an instance of `org-journal-tag-reference'."
     (string-trim
      (substring
       (gethash file-name org-journal-tags--files-cache)
-      (1- (org-journal-tag-reference-ref-start ref))
-      (1- (org-journal-tag-reference-ref-end ref))))))
+      (1- (or start (org-journal-tag-reference-ref-start ref)))
+      (1- (or end (org-journal-tag-reference-ref-end ref)))))))
 
 (defun org-journal-tags--string-match-indices (regex string)
   "Get indices of REGEX matches in STRING."
@@ -1248,8 +1423,27 @@ returned."
                       (list ref)
                     (org-journal-tags--string-extract-refs regex ref text))))
 
+(defun org-journal-tags--query-extract-timestamps (start-date end-date &optional return-ref)
+  "Extract timestamps from the database.
+
+START-DATE and END-DATE are borders by which timestamps are filtered.
+Can be either nil or UNIX timestamps.
+
+If RETURN-REF is non-nil, an list of instance of
+`org-journal-tag-reference' is returned.  Otherwise the instances are
+of `org-journal-timestamp'."
+  (cl-loop for date being the hash-keys of (alist-get :dates org-journal-tags-db)
+           using (hash-values timestamps)
+           if (and (or (null start-date) (>= date start-date))
+                   (or (null end-date) (<= date end-date)))
+           append (if return-ref
+                      (cl-loop for timestamp in timestamps
+                               collect (org-journal-timestamp-ref timestamp))
+                    timestamps)))
+
 (cl-defun org-journal-tags-query (&key tag-names exclude-tag-names start-date
-                                       end-date regex regex-narrow children order)
+                                       end-date regex regex-narrow children order
+                                       timestamps timestamp-start-date timestamp-end-date)
   "Query the org-journal-tags database.
 
 All the keys are optional.
@@ -1259,6 +1453,9 @@ EXCLUDE-TAG-NAMES is a list of strings with tag names to exclude.
 
 START-DATE and END-DATE are UNIX timestamps that set the search
 boundaries.
+
+If TIMESTAMPS is t, return timestamps.  TIMESTAMP-START-DATE and
+TIMESTAMP-END-DATE filter the timestamp list.
 
 REGEX is a regex by which the references will be filtered.  If
 REGEX-NARROW is non-nil, each found reference will be narrowed
@@ -1277,6 +1474,12 @@ The returned value is a list of `org-journal-tag-reference'."
     (setq results (org-journal-tags--query-get-tags-references
                    (org-journal-tags--query-get-tag-names tag-names children)
                    dates))
+    (when timestamps
+      (setq results
+            (org-journal-tags--query-intersect-refs
+             results
+             (org-journal-tags--query-extract-timestamps
+              timestamp-start-date timestamp-end-date t))))
     (when exclude-tag-names
       (setq results
             (org-journal-tags--query-diff-refs
@@ -1412,7 +1615,8 @@ BODY is put in that lambda."
 (define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
   "A major mode to display the org-journal-tags status buffer."
   :group 'org-journal-tags
-  (setq-local buffer-read-only t))
+  (setq-local buffer-read-only t)
+  (setq-local truncate-lines t))
 
 (defun org-journal-tags--buffer-render-info ()
   "Render the miscellaneous information for the status buffer."
@@ -1433,6 +1637,46 @@ BODY is put in that lambda."
     (insert (format "Total dates:   %s\n"
                     (propertize (number-to-string (length dates))
                                 'face 'org-journal-tags-info-face)))))
+
+(defun org-journal-tags--buffer-render-timestamps ()
+  "Render timestamps for the org-journal-tags status buffer."
+  (let ((start-date (alist-get :start org-journal-tags-timestamps))
+        (end-date (alist-get :end org-journal-tags-timestamps))
+        (widget-button-face 'normal))
+    (when (and start-date (<= start-date 31536000))
+      (setq start-date (+ start-date (org-journal-tags--round-datetime
+                                      (time-convert nil 'integer)))))
+    (when (and end-date (<= end-date 31536000))
+      (setq end-date (+ end-date (org-journal-tags--round-datetime
+                                  (time-convert nil 'integer)))))
+    (if-let (timestamps (org-journal-tags--query-extract-timestamps
+                         start-date end-date))
+        (progn
+          (dolist (timestamp timestamps)
+            (let ((preview (org-journal-tags--extract-ref
+                            (org-journal-timestamp-ref timestamp)
+                            (org-journal-timestamp-preview-start timestamp)
+                            (org-journal-timestamp-preview-end timestamp)))
+                  (date (format-time-string
+                         org-journal-date-format
+                         (time-convert (org-journal-timestamp-datetime timestamp)))))
+              (widget-create 'push-button
+                             :notify
+                             (lambda (widget &rest _)
+                               (let* ((timestamp (widget-get widget :timestamp))
+                                      (org-journal-tags--query-params
+                                       `((:timestamp-start-date
+                                          . ,(org-journal-timestamp-datetime timestamp))
+                                         (:timestamp-end-date
+                                          . ,(org-journal-timestamp-datetime timestamp))
+                                         (:timestamps . t))))
+                                 (ignore org-journal-tags--query-params)
+                                 (org-journal-tags-transient-query)))
+                             :timestamp timestamp
+                             (format "%s %s" (org-journal-tags--string-pad (propertize date 'face 'org-date) 21) preview)))
+            (widget-insert "\n"))
+          (insert "\n"))
+      (insert "No timestamps found"))))
 
 (defun org-journal-tags--get-all-tag-references (tag-name)
   "Extract all references to TAG-NAME from the database."
@@ -1461,7 +1705,7 @@ tag."
                                  (ignore org-journal-tags--query-params)
                                  (org-journal-tags-transient-query)))
                      :tag-name tag-name
-                     (string-pad tag-name max-tag-name))
+                     (org-journal-tags--string-pad tag-name max-tag-name))
       (widget-insert " ")
       (org-journal-tags--buffer-render-horizontal-barchart
        (mapcar
@@ -1488,6 +1732,11 @@ tag."
         (magit-insert-heading)
         (org-journal-tags--buffer-render-info))
       (insert "\n")
+      (when org-journal-tags-timestamps
+        (magit-insert-section (org-journal-timestamps)
+          (insert (propertize "Selected timestamps" 'face 'magit-section-heading))
+          (magit-insert-heading)
+          (org-journal-tags--buffer-render-timestamps)))
       (magit-insert-section (org-journal-tags)
         (insert (propertize "All tags" 'face 'magit-section-heading))
         (magit-insert-heading)
@@ -1572,14 +1821,14 @@ That can be used to scale multiple barcharts the same way."
             for number = (length (alist-get :refs (cdr group)))
             for ticks-number = (floor (* number width-coef))
             concat (concat
-                    (propertize (string-pad (car group) max-name-width)
+                    (propertize (org-journal-tags--string-pad (car group) max-name-width)
                                 'face 'org-journal-tags-info-face)
                     " "
-                    (string-pad
+                    (org-journal-tags--string-pad
                      (format "[%d]" number)
                      4)
                     ": "
-                    (propertize (string-pad "" ticks-number ?+)
+                    (propertize (org-journal-tags--string-pad "" ticks-number ?+)
                                 'face 'org-journal-tags-barchart-face)
                     "\n"))))
 
@@ -1916,6 +2165,24 @@ OBJ is an instance of that class."
   :description "End date"
   :prompt "End date: ")
 
+(transient-define-infix org-journal-tags--transient-timestamps ()
+  :class 'org-journal-tags--transient-switch-with-variable
+  :description "Filter timestamps"
+  :argument "--timestamps"
+  :variable :timestamps)
+
+(transient-define-infix org-journal-tags--transient-timestamp-start-date ()
+  :class 'org-journal-tags--transient-date
+  :variable :timestamp-start-date
+  :description "Timestamp start date"
+  :prompt "Timestamp start date: ")
+
+(transient-define-infix org-journal-tags--transient-timestamp-end-date ()
+  :class 'org-journal-tags--transient-date
+  :variable :timestamp-end-date
+  :description "Timestamp end date"
+  :prompt "Timestamp end date: ")
+
 (transient-define-infix org-journal-tags--transient-regex-search ()
   :class 'org-journal-tags--transient-regex
   :variable :regex
@@ -1944,7 +2211,7 @@ OBJ is an instance of that class."
   "Make a plist acceptable to `org-journal-tags-query'.
 
 VALUES should be an alist of transient values."
-  (let ((params (cl--alist-to-plist values)))
+  (let ((params (org-journal-tags--alist-to-plist values)))
     (setq params
           (if (plist-get params :order)
               (plist-put params :order 'ascending)
@@ -2025,6 +2292,10 @@ The options are as follows:
   didn't have any of these tags.
 - \"Include children\" includes child tags to the previous two lists.
 - \"Start date\" and \"End date*\" filter the references by date.
+- \"Filter timestamps\" filters the references so that they include a
+  timestamp.
+- \"Timestamp start date\" and \"Timestamp end date\" filter
+  timestamps by their date.
 - \"Regex\" filter the references by a regular expression.  It can be a
   string or `rx' expression (it just has to start with =(rx= in this
   case).
@@ -2052,6 +2323,10 @@ sequence of such set operations."
   ["Date"
    ("ds" org-journal-tags--transient-start-date)
    ("de" org-journal-tags--transient-end-date)]
+  ["Timestamps"
+   ("ii" org-journal-tags--transient-timestamps)
+   ("is" org-journal-tags--transient-timestamp-start-date)
+   ("ie" org-journal-tags--transient-timestamp-end-date)]
   ["Regex"
    ("rr" org-journal-tags--transient-regex-search)
    ("rn" org-journal-tags--transient-regex-narrow)]
