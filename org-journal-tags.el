@@ -179,7 +179,7 @@ detail."
   :type 'function
   :group 'org-journal-tags)
 
-(defcustom org-journal-tags-timestamps '((:start . 0) (:end . 2678400))
+(defcustom org-journal-tags-timestamps '((:start . 0) (:end . 1209600))
   "Whether and how to display timestamps in the status buffer.
 
 If nil, do not display.
@@ -194,8 +194,8 @@ If non-nil, this has to a an alist with the following properties:
 - `:end': End of the range for which to filter timestamps.  The rules
   are the same as for `:start'.
 
-E.g. the default value of ((:start . 0) (:end . 2678400)) filters
-timestamps between today and +31 days from today."
+E.g. the default value of ((:start . 0) (:end . 1209600)) filters
+timestamps between today and +14 days from today."
   :group 'org-journal-tags
   :type '(choice (const :tag "Do not display" nil)
                  (repeat :tag "Display parameters"
@@ -2287,6 +2287,10 @@ The options are as follows:
   didn't have any of these tags.
 - \"Include children\" includes child tags to the previous two lists.
 - \"Start date\" and \"End date*\" filter the references by date.
+- \"Filter timestamps\" filters the references so that they include a
+  timestamp.
+- \"Timestamp start date\" and \"Timestamp end date\" filter
+  timestamps by their date.
 - \"Regex\" filter the references by a regular expression.  It can be a
   string or `rx' expression (it just has to start with =(rx= in this
   case).
