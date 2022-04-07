@@ -1,5 +1,7 @@
 #+TITLE: org-journal-tags
 
+[[https://melpa.org/#/org-journal-tags][file:https://melpa.org/packages/org-journal-tags-badge.svg]]
+
 A package to make sense of +my life+ [[https://github.com/bastibe/org-journal][org-journal]] records.
 
 The package adds the =org-journal:= link type to Org Mode. When placed in an org-journal file, it serves as a "tag" that references one or many paragraphs of the journal or the entire section. These tags are aggregated in the database that can be queried in various ways.
@@ -16,10 +18,10 @@ For instance, when I'm writing down the progress on a job project, I can leave a
 
 If no tag fits the subject matter, the journal can be queried by regular expression, e.g. by searching some regex within a specific time frame. Subsequent searches are also significantly faster than the built-in org-journal search functionality because of caching of the journal files.
 * Installation
-As the package isn’t yet available anywhere but in this repository, you can clone the repository, add it to the load-path and require the package. My preferred way is =use use-package= with =straight=:
+The package is available on MELPA. Install it however you normally install packages, my preferred way is =use-package= with =straight=:
 #+begin_src emacs-lisp
 (use-package org-journal-tags
-  :straight (:host github :repo "SqrtMinusOne/org-journal-tags")
+  :straight t
   :after (org-journal)
   :config
   (org-journal-tags-autosync-mode))

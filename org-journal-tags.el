@@ -6,7 +6,7 @@
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
 ;; Version: 0.2.0
 ;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0") (transient "0.3.7"))
-;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags.el
+;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags
 
 ;; This file is NOT part of GNU Emacs.
 
@@ -331,8 +331,13 @@ The properties are:
     (with-temp-buffer
       (insert-file-contents org-journal-tags-db-file)
       (goto-char (point-min))
-      (setf org-journal-tags-db (read (current-buffer)))
-      (org-journal-tags-db--migrate))))
+      (condition-case err
+          (progn
+            (setf org-journal-tags-db (read (current-buffer)))
+            (org-journal-tags-db--migrate))
+        (error (progn
+                 (message "Recreating the database because of an error")
+                 (setf org-journal-tags-db (org-journal-tags-db--empty))))))))
 
 (defun org-journal-tags-db-ensure ()
   "Ensure that the database has been loaded."
