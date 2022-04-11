@@ -1676,7 +1676,7 @@ BODY is put in that lambda."
                              (format "%s %s" (org-journal-tags--string-pad (propertize date 'face 'org-date) 21) preview)))
             (widget-insert "\n"))
           (insert "\n"))
-      (insert "No timestamps found"))))
+      (insert "No timestamps found\n\n"))))
 
 (defun org-journal-tags--get-all-tag-references (tag-name)
   "Extract all references to TAG-NAME from the database."
