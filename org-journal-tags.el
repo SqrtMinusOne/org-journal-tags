@@ -331,7 +331,7 @@ The properties are:
     (with-temp-buffer
       (insert-file-contents org-journal-tags-db-file)
       (goto-char (point-min))
-      (condition-case err
+      (condition-case _
           (progn
             (setf org-journal-tags-db (read (current-buffer)))
             (org-journal-tags-db--migrate))
