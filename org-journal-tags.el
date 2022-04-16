@@ -1664,6 +1664,7 @@ BODY is put in that lambda."
     (define-key map (kbd "o") (org-journal-tags--with-close-status
                                (org-journal-open-current-journal-file)))
     (define-key map (kbd "?") #'org-journal-tags--status-transient-help)
+    (define-key map (kbd "r") #'org-journal-tags-refactor)
     (define-key map (kbd "RET") #'widget-button-press)
     (define-key map (kbd "q") (lambda ()
                                 (interactive)
@@ -1678,6 +1679,7 @@ BODY is put in that lambda."
         "o" (org-journal-tags--with-close-status
              (org-journal-open-current-journal-file))
         "?" #'org-journal-tags--status-transient-help
+        "r" #'org-journal-tags-refactor
         "q" (lambda ()
               (interactive)
               (quit-window t))))
@@ -1692,6 +1694,7 @@ BODY is put in that lambda."
    ("M-2" "Show level 2" magit-section-show-level-2-all)]
   ["Org Journal"
    ("s" "New query" org-journal-tags-transient-query)
+   ("r" "Rename tag" org-journal-tags-refactor)
    ("n" "New journal entry" (lambda nil
                               (interactive)
                               (when (eq major-mode 'org-journal-tags-status-mode)
