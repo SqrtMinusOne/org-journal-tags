@@ -1550,6 +1550,98 @@ the rest are date numbers.  Such a list is constructed by
                                               (alist-get :refs (cdr b)))))))))
       result)))
 
+;; Refactoring
+
+(defun org-journal-tags--refactor-buffer-inline (source-tag-name target-tag-name)
+  "Rename SOURCE-TAG-NAME to TARGET-TAG-NAME in the buffer.
+
+This function targets only inline links."
+  (save-excursion
+    (mapc
+     (lambda (link)
+       (let (case-fold-search
+             (start (org-element-property :begin link))
+             (end (org-element-property :end link)))
+         (goto-char end)
+         (while (search-backward source-tag-name start t)
+           (delete-region (match-beginning 0) (match-end 0))
+           (insert target-tag-name))))
+     (seq-reverse
+      (org-element-map (org-element-parse-buffer) 'link
+        (lambda (link)
+          (when (and (string= (org-element-property :type link) "org-journal")
+                     (string= source-tag-name
+                              (org-journal-tags--links-get-tag link)))
+            link)))))))
+
+(defun org-journal-tags--refactor-buffer-section (source-tag-name target-tag-name)
+  "Rename SOURCE-TAG-NAME to TARGET-TAG-NAME in the buffer.
+
+This function targets only section-wide links."
+  (save-excursion
+    (mapcar
+     (lambda (elem)
+       (let (case-fold-search
+             (start (org-element-property :begin elem))
+             (end (org-element-property :end elem)))
+         (goto-char end)
+         (while (search-backward source-tag-name start t)
+           (delete-region (match-beginning 0) (match-end 0))
+           (insert target-tag-name))))
+     (seq-reverse
+      (org-element-map (org-element-parse-buffer) 'property-drawer
+        (lambda (elem)
+          (let ((headline (org-journal-tags--get-element-parent elem 'headline)))
+            (when (and (= (org-element-property :level headline) 2)
+                       (org-element-property :TAGS headline))
+              elem))))))))
+
+(defun org-journal-tags-refactor (source-tag-name target-tag-name)
+  "Rename SOURCE-TAG-NAME to TARGET-TAG-NAME.
+
+If called interactively, prompt for both."
+  (interactive
+   (progn
+     (org-journal-tags-db-ensure)
+     (let ((source-tag (completing-read
+                        "Source tag: "
+                        (org-journal-tags--list-tags)))
+           (target-tag
+            (read-from-minibuffer "Target tag: ")))
+       (unless (org-journal-tags--valid-tag-p target-tag)
+         (user-error "Invalid target tag name: %s" target-tag))
+       (unless (member source-tag (org-journal-tags--list-tags))
+         (user-error "Source tag name does not exist: %s" source-tag))
+       (when (member target-tag (org-journal-tags--list-tags))
+         (unless (y-or-n-p (format "This will merge %s with %s. Continue? "
+                                   source-tag target-tag))
+           (user-error "Aborted")))
+       (list source-tag target-tag))))
+  (let ((file-names
+         (thread-last
+           (alist-get :tags org-journal-tags-db)
+           (gethash source-tag-name)
+           (org-journal-tag-dates)
+           (funcall (lambda (hash)
+                      (cl-loop for date being the hash-keys of hash
+                               collect (org-journal--get-entry-path
+                                        (seconds-to-time date)))))
+           (seq-uniq))))
+    (cl-loop for file in file-names
+             for i from 0
+             do (with-temp-buffer
+                  (message "Processing %d of %d" i (length file-names))
+                  (insert-file-contents file)
+                  (setq-local buffer-file-name file)
+                  (let ((org-mode-hook nil))
+                    (org-mode))
+                  (org-journal-tags--ensure-decrypted)
+                  (org-journal-tags--refactor-buffer-inline
+                   source-tag-name target-tag-name)
+                  (org-journal-tags--refactor-buffer-section
+                   source-tag-name target-tag-name)
+                  (save-buffer)))))
+
 ;; Status buffer
 
 (defmacro org-journal-tags--with-close-status (&rest body)
