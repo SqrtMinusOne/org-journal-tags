@@ -43,6 +43,8 @@ The link will reference the current Org Mode paragraph. If you want to reference
 Run =M-x org-journal-tags-link-get-region-at-point= to select the referenced region of the buffer.
 
 To add a tag to the entire section, run =M-x org-journal-tags-prop-set=, which will create or update the =Tags= property in the property drawer of the current time section. This command features a notmuch-like UI, i.e. completing read for multiple entries, where =+<tag>= adds a tag and =-<tag>= deletes a tag.
+
+If you decide to rename a tag, there's =M-x org-journal-tags-refactor=.
 ** Adding timestamps
 In addition to tags, the package also aggregates inline timestamps, i.e. timestamps that are left in the text like this:
 
