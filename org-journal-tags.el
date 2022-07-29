@@ -2267,7 +2267,9 @@ are as follows:
 
 (cl-defmethod transient-infix-read ((obj org-journal-tags--transient-switches))
   "Cycle through the mutually exclusive switches.
-The last value is \"don't use any of these switches\"."
+
+OBJ is an instance of the `org-journal-tags--transient-switches'
+class."
   (let ((choices (oref obj choices)))
     (let ((idx (cl-position (oref obj value) choices)))
       (nth (% (1+ idx) (length choices)) choices))))
