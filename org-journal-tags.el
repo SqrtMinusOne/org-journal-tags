@@ -293,10 +293,13 @@ The properties are:
 The properties are:
 - `:ref-start': Start of the referenced region.
 - `:ref-end': End of the referenced region.
+- `:loc': Location of the reference:
+  - `inline': Inline reference.
+  - `section': Section reference.
 - `:time': A string that holds the time of the reference record.
   Doesn't have to be in any particular format.
 - `:date': A timestamp with the date of the referenced record."
-  ref-start ref-end time date)
+  ref-start ref-end loc time date)
 
 (cl-defstruct (org-journal-timestamp (:constructor org-journal-timestamp--create))
   "A structure that holds one timestamp reference in org-journal.
@@ -314,13 +317,13 @@ The properties are:
     (:files . ,(make-hash-table :test #'equal))
     (:dates . ,(make-hash-table))
     (:files-dates . ,(make-hash-table :test #'equal))
-    (:version 2)))
+    (:version 3)))
 
 (defun org-journal-tags-db--migrate ()
   "Migrate the org-journal-tags database."
   (let ((version (alist-get :version org-journal-tags-db)))
     (cond
-     ((null version)
+     ((or (null version) (= version 2))
       (message "Database has been reset due to update")
       (setf org-journal-tags-db (org-journal-tags-db--empty))))))
 
@@ -544,6 +547,7 @@ paragraphs."
                   (region (org-journal-tags--links-inline-get-region link))
                   (elem (org-element-property :parent link))
                   (ref (org-journal-tags--links-extract-one elem region)))
+        (setf (org-journal-tag-reference-loc ref) 'inline)
         (cons tag ref)))))
 
 (defun org-journal-tags--links-parse-link-str (str)
@@ -599,6 +603,7 @@ every section."
                      (ref (org-journal-tag-reference--create
                            :ref-start (org-element-property :contents-begin elem)
                            :ref-end (org-element-property :contents-end elem)
+                           :loc 'section
                            :time (org-element-property :raw-value elem)
                            :date created)))
             (when add-empty
@@ -1340,6 +1345,18 @@ returned."
                 collect tag-name))
     '("")))
 
+(defun org-journal-tags--query-filter-location (refs location)
+  "Filter REFS by LOCATION.
+
+LOCATION can be `section', `inline', or `both'.  REFS is a list of `org-journal-tag-reference'."
+  (pcase location
+    ((or 'both 'nil)
+     refs)
+    (_ (seq-filter
+        (lambda (ref)
+          (eq (org-journal-tag-reference-loc ref) location))
+        refs))))
+
 (defvar org-journal-tags--files-cache (make-hash-table :test #'equal)
   "A cache for org-journal files used to speed up queries.
 
@@ -1443,7 +1460,8 @@ of `org-journal-timestamp'."
 
 (cl-defun org-journal-tags-query (&key tag-names exclude-tag-names start-date
                                        end-date regex regex-narrow children order
-                                       timestamps timestamp-start-date timestamp-end-date)
+                                       timestamps timestamp-start-date timestamp-end-date
+                                       location)
   "Query the org-journal-tags database.
 
 All the keys are optional.
@@ -1474,6 +1492,7 @@ The returned value is a list of `org-journal-tag-reference'."
     (setq results (org-journal-tags--query-get-tags-references
                    (org-journal-tags--query-get-tag-names tag-names children)
                    dates))
+    (setq results (org-journal-tags--query-filter-location results location))
     (when timestamps
       (setq results
             (org-journal-tags--query-intersect-refs
@@ -2093,7 +2112,8 @@ REFS is a list org `org-journal-tag-reference'."
 ;; Query transient
 
 (defclass org-journal-tags--transient-variable (transient-variable)
-  ((transient :initform 'transient--do-call))
+  ((transient :initform 'transient--do-call)
+   (default-value :initarg :default-value))
   "A base class for settings in the query buffer.
 
 The name of the variable corresponds to the key in
@@ -2118,7 +2138,11 @@ OBJ is an instance of the `org-journal-tags--transient-variable' class."
   (if (bound-and-true-p org-journal-tags--query-params)
       (oset obj value
             (alist-get (oref obj variable) org-journal-tags--query-params))
-    (oset obj value nil)))
+    (oset obj value
+          (if (and (slot-exists-p obj 'default-value)
+                   (slot-boundp obj 'default-value))
+              (oref obj default-value)
+            nil))))
 
 (cl-defmethod transient-init-value ((obj org-journal-tags--transient-switch-with-variable))
   "Initialize the starting value for the infix.
@@ -2230,6 +2254,42 @@ OBJ is an instance of that class."
          'face 'transient-value)
       (propertize "unset" 'face 'transient-inactive-value))))
 
+(defclass org-journal-tags--transient-switches (org-journal-tags--transient-variable)
+  ((argument-format  :initarg :argument-format)
+   (argument-regexp  :initarg :argument-regexp))
+  "Class used for sets of mutually exclusive command-line switches.
+
+This is inspired by `transient-switches', but with a few
+modifications:
+- Inherit from `org-journal-tags--transient-variable'.
+- Do not allow empty values.")
+
+(cl-defmethod transient-infix-read ((obj org-journal-tags--transient-switches))
+  "Cycle through the mutually exclusive switches.
+The last value is \"don't use any of these switches\"."
+  (let ((choices (oref obj choices)))
+    (let ((idx (cl-position (oref obj value) choices)))
+      (nth (% (1+ idx) (length choices)) choices))))
+
+(cl-defmethod transient-format-value ((obj org-journal-tags--transient-switches))
+  (with-slots (value argument-format choices) obj
+    (format (propertize argument-format
+                        'face (if value
+                                  'transient-value
+                                'transient-inactive-value))
+            (concat
+             (propertize "[" 'face 'transient-inactive-value)
+             (mapconcat
+              (lambda (choice)
+                (propertize (format "%s" choice) 'face
+                            (if (equal choice value)
+                                'transient-value
+                              'transient-inactive-value)))
+              choices
+              (propertize "|" 'face 'transient-inactive-value))
+             (propertize "]" 'face 'transient-inactive-value)))))
+
+
 (transient-define-infix org-journal-tags--transient-include-tags ()
   :class 'org-journal-tags--transient-tags
   :variable :tag-names
@@ -2247,6 +2307,14 @@ OBJ is an instance of that class."
   :description "Include child tags"
   :argument "--children"
   :variable :children)
+
+(transient-define-infix org-journal-tags--transient-loc ()
+  :class 'org-journal-tags--transient-switches
+  :description "Tag location"
+  :argument-format "--%s"
+  :default-value 'both
+  :choices '(both inline section)
+  :variable :location)
 
 (transient-define-infix org-journal-tags--transient-start-date ()
   :class 'org-journal-tags--transient-date
@@ -2414,7 +2482,8 @@ sequence of such set operations."
   ["Tags"
    ("ti" org-journal-tags--transient-include-tags)
    ("te" org-journal-tags--transient-exclude-tags)
-   ("tc" org-journal-tags--transient-children)]
+   ("tc" org-journal-tags--transient-children)
+   ("tl" org-journal-tags--transient-loc)]
   ["Date"
    ("ds" org-journal-tags--transient-start-date)
    ("de" org-journal-tags--transient-end-date)]
