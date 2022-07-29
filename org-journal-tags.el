@@ -1348,7 +1348,8 @@ returned."
 (defun org-journal-tags--query-filter-location (refs location)
   "Filter REFS by LOCATION.
 
-LOCATION can be `section', `inline', or `both'.  REFS is a list of `org-journal-tag-reference'."
+LOCATION can be `section', `inline', or `both'.  REFS is a list of
+`org-journal-tag-reference'."
   (pcase location
     ((or 'both 'nil)
      refs)
@@ -2259,8 +2260,8 @@ OBJ is an instance of that class."
    (argument-regexp  :initarg :argument-regexp))
   "Class used for sets of mutually exclusive command-line switches.
 
-This is inspired by `transient-switches', but with a few
-modifications:
+This is inspired by the `transient-switches' class.  The modifications
+are as follows:
 - Inherit from `org-journal-tags--transient-variable'.
 - Do not allow empty values.")
 
@@ -2272,6 +2273,9 @@ The last value is \"don't use any of these switches\"."
       (nth (% (1+ idx) (length choices)) choices))))
 
 (cl-defmethod transient-format-value ((obj org-journal-tags--transient-switches))
+  "Format value of `org-journal-tags--transient-switches'.
+
+OBJ is an instance of that class."
   (with-slots (value argument-format choices) obj
     (format (propertize argument-format
                         'face (if value
