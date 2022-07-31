@@ -32,8 +32,9 @@
 ;; ways.
 ;;
 ;; The tag format is as follows:
-;; [[org-journal:<tag-name>::<number-of-paragraphs>][<tag-description>]]
-;; where the "::<number-of-paragraphs>" part is optional.
+;; [[org-journal:<kind>:<tag-name>::<number-of-paragraphs>][<tag-description>]]
+;; where the ":<kind>" and "::<number-of-paragraphs>" part is
+;; optional.
 ;;
 ;; Enabling `org-journal-tags-autosync-mode' syncronizes these tags
 ;; with the database at the moment of saving the org-journal buffer.
@@ -68,6 +69,8 @@
 ;; the code.
 (declare-function evil-define-key* "evil-core")
 
+;; Same with org-contacts.
+(declare-function org-contacts-db "org-contacts")
 
 (defgroup org-journal-tags ()
   "Tagging and querying system for org-journal."
@@ -215,12 +218,6 @@ timestamps between today and +14 days from today."
 (defconst org-journal-tags-status-buffer-name "*org-journal-tags*"
   "Default buffer name for org-journal-tags status.")
 
-(defun org-journal-tags--format-new-tag-default (tag)
-  "Default formatting function for new org journal tags.
-
-TAG is a string with the tag name."
-  (format "[[org-journal:%s][#%s]]" tag tag))
-
 (defun org-journal-tags--face-default (&rest _)
   "Return the default tag face."
   'org-journal-tags-tag-face)
@@ -281,7 +278,7 @@ the string."
   "A structure that holds one org journal tag.
 
 The properties are:
-- `:name': Tag name.
+- `:name': Tag name. \":\" is a reserved character.
 - `:dates': Hash map with timestamps as keys and lists of
   `org-journal-tag-reference' as values."
   name
@@ -394,16 +391,73 @@ record in the journal."
   (org-journal-tags-db-save)
   (setf org-journal-tags-db nil))
 
+;; Tag kinds
+(defvar org-journal-tags-kinds '()
+  "Tag kinds settings.
+
+This is an alist, where the key is the tag kind and the value
+is an alist with parameters.  Take a look at the
+`org-journal-tags-define-tag-kind' macro for possible parameters.")
+
+(defmacro org-journal-tags-define-tag-kind (name &rest props)
+  "Define a new tag kind.
+
+NAME is the kind name, PROPS is a plist of parameters.  All the
+parameters are optional, but having a kind with zero parameters makes
+little sense.  Available parameters are as follows:
+- `:completion-function': A function that completes a tag name, e.g. by
+  invoking `completing-read' against some external database.  Should
+  return the tag name (without the kind prefix)
+- `:follow-function': A function to invoke on following the link with
+  a prefix argument.
+- `:name': Name to display in the `org-journal-tags-status'."
+  (declare (indent defun))
+  `(setf (alist-get ',name org-journal-tags-kinds)
+         (let ((alist-props
+                (cl-loop for (key value) on (list ,@props) by #'cddr
+                         collect (cons key value))))
+           alist-props)))
+
+(defun org-journal-tags--get-kinds ()
+  "Return all defined tag kinds."
+  (cl-loop for (kind . props) in org-journal-tags-kinds
+           collect (cons (symbol-name kind) kind) into res
+           finally return (cons
+                           (cons "none" nil) res)))
+
+(defun org-journal-tags--get-tag-names-of-kind (kind)
+  "Return all tags names of kind KIND."
+  (cl-loop for tag-name being the hash-keys of
+           (alist-get :tags org-journal-tags-db)
+           for tag-kind = (org-journal-tags--get-tag-kind tag-name)
+           if (equal tag-kind kind)
+           collect tag-name))
 
 ;; Org link
 
-(defun org-journal-tags--follow (tag _prefix)
+(defun org-journal-tags--get-tag-name (tag)
+  "Extract tag name from TAG."
+  (replace-regexp-in-string
+   (rx "::" (* nonl) eos)
+   ""
+   tag))
+
+(defun org-journal-tags--get-tag-kind (tag)
+  "Extract tag kind from TAG."
+  (let* ((tag-name (org-journal-tags--get-tag-name tag))
+         (tag-kind (replace-regexp-in-string
+                    (rx ":" (* nonl) eos)
+                    ""
+                    tag-name)))
+    (cond
+     ((string-equal tag-name tag-kind) nil)
+     ;; TODO check if `tag-kind' exists
+     (t (intern tag-kind)))))
+
+(defun org-journal-tags--follow-query (tag)
   "Open org-journal-tags query transient for TAG."
   (let ((org-journal-tags--query-params
-         `((:tag-names . (,(replace-regexp-in-string
-                            (rx "::" (* nonl) eos)
-                            ""
-                            tag))))))
+         `((:tag-names . (,(org-journal-tags--get-tag-name tag))))))
     ;; XXX `org-journal-tags--query-params' is used in the init-value
     ;; method of infixes of the `org-journal-tags-transient-query'.  I
     ;; have no idea how else to silence the "Unused lexical variable"
@@ -411,12 +465,64 @@ record in the journal."
     (ignore org-journal-tags--query-params)
     (org-journal-tags-transient-query)))
 
-(defun org-journal-tags--complete (&optional _)
-  "Create an org-journal-tags link using completion."
+(defun org-journal-tags--follow-kind (tag)
+  "Execute `:follow-function' for TAG kind if available."
+  (if-let* ((kind (org-journal-tags--get-tag-kind tag))
+            (follow-function
+             (alist-get :follow-function
+                        (alist-get kind org-journal-tags-kinds))))
+      (funcall follow-function tag)
+    (org-journal-tags--follow-query tag)))
+
+(defun org-journal-tags--follow (tag prefix)
+  "Follow org-journal-tag link for TAG.
+
+PREFIX is the universal prefix argument."
+  (pcase prefix
+    ('nil (org-journal-tags--follow-query tag))
+    ('(4) (org-journal-tags--follow-kind tag))))
+
+(defun org-journal-tags--completing-read (&optional use-kind kind-completion)
+  "Read a tag from the minibuffer.
+
+If USE-KIND is nil, query from the list of all tags.  Otherwise, query
+the kind first.  Then, if KIND-COMPLETION is nil, query from the list
+of all tags of the selected kind, otherwise try to use
+`:completion-function' for that kind."
+  (if use-kind
+      (let* ((kinds (org-journal-tags--get-kinds))
+             (kind (alist-get
+                    (completing-read "Tag kind: " kinds)
+                    kinds nil nil #'equal))
+             (kind-completion-function
+              (when kind-completion
+                (alist-get :completion-function
+                           (alist-get 'contact org-journal-tags-kinds))))
+             (tag-name
+              (if kind-completion-function
+                  (funcall kind-completion-function)
+                (completing-read
+                 "Tag name: "
+                 (mapcar
+                  (lambda (tag-name)
+                    (replace-regexp-in-string
+                     (rx bos (* alnum) ":")
+                     ""
+                     tag-name))
+                  (org-journal-tags--get-tag-names-of-kind kind))))))
+        (if kind
+            (format "%s:%s" kind tag-name)
+          tag-name))
+    (completing-read
+     "Tag: "
+     (org-journal-tags--list-tags))))
+
+(defun org-journal-tags--complete (&optional prefix)
+  "Create an org-journal-tags link using completion.
+
+PREFIX is the universal prefix argument."
   (org-journal-tags-db-ensure)
-  (let ((name (completing-read
-               "Tag: "
-               (org-journal-tags--list-tags))))
+  (let ((name (org-journal-tags--completing-read prefix)))
     (unless (org-journal-tags--valid-tag-p name)
       (user-error "Invalid tag name: %s" name))
     (format "org-journal:%s" name)))
@@ -428,15 +534,30 @@ record in the journal."
  :face (lambda (&rest args) (funcall org-journal-tags-face-function args)))
 
 
-;; Tags extraction and persistence
+;; Tag kinds
 
-(defun org-journal-tags--ensure-decrypted ()
-  "Ensure that the current org-journal buffer is decrypted."
-  (when org-journal-enable-encryption
-    (save-excursion
-      (goto-char (point-min))
-      (while (search-forward ":crypt:" nil t)
-        (org-decrypt-entry)))))
+(defun org-journal-tags--org-contacts-complete ()
+  "Complete org-journal-tags tag with `org-contacts'."
+  (unless (fboundp #'org-contacts-db)
+    (user-error "Org Contacts is unavailable"))
+  (let* ((contacts (org-contacts-db))
+         (contact-data
+          (mapcar
+           (lambda (contact)
+             (let ((contact-name
+                    (or (alist-get "JOURNAL_NAME" (nth 2 contact) nil nil #'equal)
+                        (substring-no-properties (car contact)))))
+               (cons contact-name contact)))
+           contacts))
+         (contact-name
+          (completing-read "Contact: " contact-data)))
+    contact-name))
+
+(org-journal-tags-define-tag-kind contact
+  :name "Org Contacts"
+  :completion-function #'org-journal-tags--org-contacts-complete)
+
+;; Tags extraction and persistence
 
 (defun org-journal-tags--links-get-tag (link)
   "Get tag name from LINK.
@@ -446,6 +567,25 @@ LINK is either Org element or string."
    (rx "::" (* nonl) eos)
    ""
    (or (org-element-property :path link) link)))
+
+(defun org-journal-tags--format-new-tag-default (tag)
+  "Default formatting function for new org journal tags.
+
+TAG is a string with the tag name."
+  (let ((tag-title
+         (replace-regexp-in-string
+          (rx bos (+ alnum) ":")
+          ""
+          tag)))
+    (format "[[org-journal:%s][#%s]]" tag tag-title)))
+
+(defun org-journal-tags--ensure-decrypted ()
+  "Ensure that the current org-journal buffer is decrypted."
+  (when org-journal-enable-encryption
+    (save-excursion
+      (goto-char (point-min))
+      (while (search-forward ":crypt:" nil t)
+        (org-decrypt-entry)))))
 
 (defun org-journal-tags--get-element-parent (elem type)
   "Get the first parent of ELEM of the type TYPE.
@@ -488,7 +628,7 @@ The point should be exactly at the beginning of the link."
     (unless link
       (user-error "No link found at point"))
     (unless (string-equal (org-element-property :type link) "org-journal")
-      (user-error "Link is not of the \"org-jounral\" type"))
+      (user-error "Link is not of the \"org-journal\" type"))
     (let ((region (org-journal-tags--links-inline-get-region
                    (org-element-map (org-element-parse-buffer) 'link
                      (lambda (elem)
@@ -917,18 +1057,29 @@ list of tags to remove."
          :remove remove-tags-res)))))
 
 ;;;###autoload
-(defun org-journal-tags-insert-tag ()
-  "Insert org-journal tag at point."
-  (interactive)
+(defun org-journal-tags-insert-tag (prefix)
+  "Insert org-journal tag at point.
+
+PREFIX is the universal prefix argument.  If invoked with
+\\[universal-argument], then first query for the kind of tag, then for
+the tag itself from the set of already used tags of that kind.
+
+If invoked with double \\[universal-argument], then query the tag
+from the kind-specific source instead of already used tags, if such a
+source is available."
+  (interactive "P")
   (org-journal-tags-db-ensure)
   (insert
-   (let ((name (completing-read
-                "Tag: "
-                (org-journal-tags--list-tags))))
+   (let ((name
+          (pcase prefix
+            ('nil (org-journal-tags--completing-read))
+            ('(4) (org-journal-tags--completing-read t))
+            ('(16) (org-journal-tags--completing-read t t)))))
      (unless (org-journal-tags--valid-tag-p name)
        (user-error "Invalid tag name: %s" name))
      (funcall org-journal-tags-format-new-tag-function
               name))))
+
 ;; Global setup
 
 (defun org-journal-tags--setup-buffer ()
@@ -1623,11 +1774,11 @@ If called interactively, prompt for both."
   (interactive
    (progn
      (org-journal-tags-db-ensure)
-     (let ((source-tag (completing-read
-                        "Source tag: "
-                        (org-journal-tags--list-tags)))
-           (target-tag
-            (read-from-minibuffer "Target tag: ")))
+     (let* ((source-tag (org-journal-tags--completing-read
+                         current-prefix-arg
+                         (equal current-prefix-arg '(16))))
+            (target-tag
+             (read-from-minibuffer (format "Change %s to: " source-tag))))
        (unless (org-journal-tags--valid-tag-p target-tag)
          (user-error "Invalid target tag name: %s" target-tag))
        (unless (member source-tag (org-journal-tags--list-tags))
