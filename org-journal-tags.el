@@ -412,7 +412,7 @@ little sense.  Available parameters are as follows:
   a prefix argument.
 - `:name': Name to display in the `org-journal-tags-status'."
   (declare (indent defun))
-  (cl-loop for (key value) on props by #'cddr
+  (cl-loop for (key) on props by #'cddr
            unless (memq key '(:completion-function :follow-function :name))
            do (error "Wrong parameter %s" key))
   `(setf (alist-get ',name org-journal-tags-kinds)
@@ -2000,7 +2000,8 @@ tag."
                (seq-max
                 (mapcar
                  #'length
-                 (cl-loop for (kind . names) in tag-names-by-kind
+                 (cl-loop for item in tag-names-by-kind
+                          for names = (cdr item)
                           append names))))
               (need-group-kinds (> (length tag-names-by-kind) 1)))
     (dolist (kind-datum tag-names-by-kind)
