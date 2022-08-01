@@ -309,8 +309,7 @@ This function is a version of `decoded-time-add' which takes into
 account only the year, month and day fields of DELTA.  This is so
 because `time-convert' in the original function spams \"obsolete
 timestamp\" to the console if DELTA has some fields set to nil."
-  (let ((time (copy-sequence time))
-        seconds)
+  (let ((time (copy-sequence time)))
     ;; Years are simple.
     (when (decoded-time-year delta)
       (cl-incf (decoded-time-year time) (decoded-time-year delta)))
