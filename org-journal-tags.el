@@ -132,7 +132,7 @@ Also take a look at `org-journal-tags-db-load' and
 
 (defface org-journal-tags-on-this-day-time-header
   '((t (:inherit success)))
-  "A face for time headings in the \"On this day\" section"
+  "A face for time headings in the \"On this day\" section."
   :group 'org-journal-tags)
 
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
@@ -298,6 +298,44 @@ the string."
       (push (car x) res)
       (push (cdr x) res))
     (nreverse res)))
+
+;; XXX copied from `decoded-time-add'
+(defun org-journal-tags--decoded-time-add (time delta)
+  "Add DELTA to TIME, both of which are `decoded-time' structures.
+TIME should represent a time, while DELTA should have non-nil
+entries only for the values that should be altered.
+
+This function is a version of `decoded-time-add' which takes into
+account only the year, month and day fields of DELTA.  This is so
+because `time-convert' in the original function spams \"obsolete
+timestamp\" to the console if DELTA has some fields set to nil."
+  (let ((time (copy-sequence time))
+        seconds)
+    ;; Years are simple.
+    (when (decoded-time-year delta)
+      (cl-incf (decoded-time-year time) (decoded-time-year delta)))
+
+    ;; Months are pretty simple, but start at 1 (for January).
+    (when (decoded-time-month delta)
+      (let ((new (+ (1- (decoded-time-month time)) (decoded-time-month delta))))
+        (setf (decoded-time-month time) (1+ (mod new 12)))
+        (cl-incf (decoded-time-year time) (/ new 12))))
+
+    ;; Adjust for month length (as described in the doc string).
+    (setf (decoded-time-day time)
+          (min (date-days-in-month (decoded-time-year time)
+                                   (decoded-time-month time))
+               (decoded-time-day time)))
+
+    ;; Days are iterative.
+    (when-let* ((days (decoded-time-day delta)))
+      (let ((increase (> days 0))
+            (days (abs days)))
+        (while (> days 0)
+          (decoded-time--alter-day time increase)
+          (cl-decf days))))
+
+    time))
 
 ;; Data model and database
 
@@ -1999,7 +2037,7 @@ BODY is put in that lambda."
 (defun org-journal-tags--on-this-day-get-dates ()
   "Get the list of dates for the \"On this day\" section."
   (cl-loop for (description . params) in org-journal-tags-on-this-day-breakpoints
-           collect (let ((time (decoded-time-add
+           collect (let ((time (org-journal-tags--decoded-time-add
                                 (decode-time)
                                 (apply #'make-decoded-time params))))
                      (setf (decoded-time-second time) 0
@@ -2012,13 +2050,15 @@ BODY is put in that lambda."
                             'integer)))))
 
 (defun org-journal-tags--fill-paragraph-string (string)
-  "Use Org Mode to fill STRING."
+  "Use Org Mode to fill STRING to some fixed width."
   (with-temp-buffer
     (insert string)
     (goto-char (point-min))
     (let ((point -1)
           (can-move t))
       (while can-move
+        ;; XXX `org-fill-paragraph' seems to choke on some source
+        ;; blocks, and it makes little sense to change them anyway
         (let ((elem-type (org-element-type
                           (save-excursion
                             (end-of-line)
