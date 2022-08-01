@@ -412,6 +412,9 @@ little sense.  Available parameters are as follows:
   a prefix argument.
 - `:name': Name to display in the `org-journal-tags-status'."
   (declare (indent defun))
+  (cl-loop for (key value) on props by #'cddr
+           unless (memq key '(:completion-function :follow-function :name))
+           do (error "Wrong parameter %s" key))
   `(setf (alist-get ',name org-journal-tags-kinds)
          (let ((alist-props
                 (cl-loop for (key value) on (list ,@props) by #'cddr
@@ -432,6 +435,28 @@ little sense.  Available parameters are as follows:
            for tag-kind = (org-journal-tags--get-tag-kind tag-name)
            if (equal tag-kind kind)
            collect tag-name))
+
+(defun org-journal-tags--get-tag-names-by-kind ()
+  "Get tag names grouped by kind."
+  (cl-loop with result = (list (cons nil nil))
+           for tag-name being the hash-keys of (alist-get :tags org-journal-tags-db)
+           for tag-kind = (org-journal-tags--get-tag-kind tag-name)
+           if (org-journal-tags--valid-tag-p tag-name)
+           do (setf (alist-get tag-kind result)
+                    (cons tag-name (alist-get tag-kind result)))
+           finally return (mapcar
+                           (lambda (x)
+                             (cons (car x)
+                                   (seq-sort #'string-lessp (cdr x))))
+                           (nreverse result))))
+
+(defun org-journal-tags--get-kind-display-name (kind)
+  "Get the display name of KIND."
+  (if (null kind)
+      "No category"
+    (or (alist-get :name
+                   (alist-get kind org-journal-tags-kinds))
+        (symbol-name kind))))
 
 ;; Org link
 
@@ -1952,35 +1977,64 @@ BODY is put in that lambda."
               (gethash tag-name (alist-get :tags org-journal-tags-db)))
              append refs)))
 
+(defmacro org-journal-tags--magit-insert-section-maybe (section-params cond &rest body)
+  "If COND is non-nil, wrap BODY in `magit-insert-section'.
+
+SECTION-PARAMS is the first form of the section."
+  (declare (indent 2))
+  `(if ,cond
+       (magit-insert-section ,section-params
+         ,@body)
+     ,@body))
+
 (defun org-journal-tags--buffer-render-tag-buttons ()
   "Render tag buttons for the org-journal-tags status buffer.
 
 This function creates a button and a horizontal barchart for each
 tag."
-  (when-let* ((tag-names (seq-sort #'string-lessp (org-journal-tags--list-tags)))
+  (when-let* ((tag-names-by-kind (org-journal-tags--get-tag-names-by-kind))
               (dates-list (org-journal-tags--get-dates-list
                            (org-journal-tags--query-sort-refs
                             (org-journal-tags--get-all-tag-references ""))))
-              (max-tag-name (seq-max (mapcar #'length tag-names))))
-    (dolist (tag-name tag-names)
-      (widget-create 'push-button
-                     :notify (lambda (widget &rest _)
-                               (let ((org-journal-tags--query-params
-                                      `((:tag-names
-                                         . (,(widget-get widget :tag-name))))))
-                                 (ignore org-journal-tags--query-params)
-                                 (org-journal-tags-transient-query)))
-                     :tag-name tag-name
-                     (org-journal-tags--string-pad tag-name max-tag-name))
-      (widget-insert " ")
-      (org-journal-tags--buffer-render-horizontal-barchart
-       (mapcar
-        (lambda (group) (length (alist-get :refs (cdr group))))
-        (org-journal-tags--buffer-get-barchart-data
-         (org-journal-tags--get-all-tag-references tag-name)
-         (- (window-body-width) max-tag-name 2)
-         dates-list)))
-      (widget-insert "\n"))
+              (max-tag-name
+               (seq-max
+                (mapcar
+                 #'length
+                 (cl-loop for (kind . names) in tag-names-by-kind
+                          append names))))
+              (need-group-kinds (> (length tag-names-by-kind) 1)))
+    (dolist (kind-datum tag-names-by-kind)
+      (org-journal-tags--magit-insert-section-maybe (org-journal-tags)
+          need-group-kinds
+        (when need-group-kinds
+          (insert (propertize (org-journal-tags--get-kind-display-name
+                               (car kind-datum))
+                              'face 'magit-section-secondary-heading))
+          (magit-insert-heading))
+        (dolist (tag-name (cdr kind-datum))
+          (widget-create 'push-button
+                         :notify (lambda (widget &rest _)
+                                   (let ((org-journal-tags--query-params
+                                          `((:tag-names
+                                             . (,(widget-get widget :tag-name))))))
+                                     (ignore org-journal-tags--query-params)
+                                     (org-journal-tags-transient-query)))
+                         :tag-name tag-name
+                         (org-journal-tags--string-pad
+                          (replace-regexp-in-string
+                           (rx bos (* alnum) ":")
+                           ""
+                           tag-name)
+                          max-tag-name))
+          (widget-insert " ")
+          (org-journal-tags--buffer-render-horizontal-barchart
+           (mapcar
+            (lambda (group) (length (alist-get :refs (cdr group))))
+            (org-journal-tags--buffer-get-barchart-data
+             (org-journal-tags--get-all-tag-references tag-name)
+             (- (window-body-width) max-tag-name 2)
+             dates-list)))
+          (widget-insert "\n"))))
     (widget-setup)))
 
 (defun org-journal-tags--buffer-render-contents ()
