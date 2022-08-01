@@ -130,6 +130,11 @@ Also take a look at `org-journal-tags-db-load' and
   "A face for time headings in the query result buffer."
   :group 'org-journal-tags)
 
+(defface org-journal-tags-on-this-day-time-header
+  '((t (:inherit success)))
+  "A face for time headings in the \"On this day\" section"
+  :group 'org-journal-tags)
+
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
   "A function to get a face of a tag.
 
@@ -211,6 +216,28 @@ timestamps between today and +14 days from today."
                                 (const :tag "End" end)
                                 (choice (integer :tag "Timestamp")
                                         (const :tag "Do not filter" nil)))))))
+
+(defcustom org-journal-tags-on-this-day-breakpoints
+  `(("1 year ago" . (:year -1))
+    ,@(cl-loop for year from 2 to 25
+               collect (cons (format "%d years ago" year)
+                             (list :year (- year)))))
+  "Whether and how to display the \"On this day\" section.
+
+If nil, do not display.
+
+Otherwise, this is a list of cons cells, where the car is the display
+name and the value is a plist of parameters that is passed to
+`make-decoded-time'."
+  :group 'org-journal-tags
+  :type '(choice (const :tag "Do not display")
+                 (repeat :tag "Display parameters"
+                         (cons (string :tag "Description")
+                               (plist
+                                :key-type (choice (const :tag "Year" :year)
+                                                  (const :tag "Month" :month)
+                                                  (const :tag "Day" :day))
+                                :value-type integer)))))
 
 (defconst org-journal-tags-query-buffer-name "*org-journal-query*"
   "Default buffer name for org-journal-tags quieries.")
@@ -1969,6 +1996,91 @@ BODY is put in that lambda."
           (insert "\n"))
       (insert "No timestamps found\n\n"))))
 
+(defun org-journal-tags--on-this-day-get-dates ()
+  "Get the list of dates for the \"On this day\" section."
+  (cl-loop for (description . params) in org-journal-tags-on-this-day-breakpoints
+           collect (let ((time (decoded-time-add
+                                (decode-time)
+                                (apply #'make-decoded-time params))))
+                     (setf (decoded-time-second time) 0
+                           (decoded-time-minute time) 0
+                           (decoded-time-hour time) 0)
+                     (cons description
+                           (time-convert
+                            (encode-time
+                             time)
+                            'integer)))))
+
+(defun org-journal-tags--fill-paragraph-string (string)
+  "Use Org Mode to fill STRING."
+  (with-temp-buffer
+    (insert string)
+    (goto-char (point-min))
+    (let ((point -1)
+          (can-move t))
+      (while can-move
+        (let ((elem-type (org-element-type
+                          (save-excursion
+                            (end-of-line)
+                            (org-element-at-point)))))
+          (unless (memq elem-type '(src-block))
+            (org-fill-paragraph)))
+        (org-forward-paragraph)
+        (setq can-move (not (eq point (point)))
+              point (point)))
+      (buffer-string))))
+
+(defun org-journal-tags--buffer-render-on-this-day ()
+  "Render the \"On this day\" section."
+  (when-let ((look-dates (org-journal-tags--on-this-day-get-dates))
+             (refs (org-journal-tags--get-all-tag-references ""))
+             (refs-hash (make-hash-table)))
+    (cl-loop for datum in look-dates
+             for date = (cdr datum)
+             do (puthash date nil refs-hash))
+    (cl-loop for ref in refs
+             for date = (org-journal-tag-reference-date ref)
+             unless (eq (gethash date refs-hash 'not-found) 'not-found)
+             do (push ref (gethash date refs-hash)))
+    (when-let (found-dates
+               (cl-loop for datum in look-dates
+                        for date = (cdr datum)
+                        if (gethash date refs-hash)
+                        collect datum))
+      (magit-insert-section (org-journal-tags-on-this-day)
+        (insert (propertize "On this day" 'face 'magit-section-heading))
+        (magit-insert-heading)
+        (cl-loop
+         for (description . date) in found-dates
+         for refs = (gethash date refs-hash)
+         do (magit-insert-section (org-journal-tags-on-this-day-date date t)
+              (insert
+               (propertize
+                (format
+                 "%s, %s"
+                 description
+                 (format-time-string org-journal-date-format date))
+                'face 'magit-section-secondary-heading))
+              (magit-insert-heading)
+              (cl-loop
+               for ref in refs
+               for preview = (org-journal-tags--fill-paragraph-string
+                              (org-journal-tags--extract-ref ref))
+               do (magit-insert-section section (org-journal-tags-time-section nil t)
+                    (thread-last
+                      ref
+                      org-journal-tag-reference-time
+                      (format "%s\n")
+                      (funcall
+                       (lambda (s)
+                         (propertize s 'face
+                                     'org-journal-tags-on-this-day-time-header)))
+                      insert)
+                    (oset section ref ref)
+                    (magit-insert-heading)
+                    (insert preview "\n"))))))
+      (insert "\n"))))
+
 (defun org-journal-tags--get-all-tag-references (tag-name)
   "Extract all references to TAG-NAME from the database."
   (when (gethash tag-name (alist-get :tags org-journal-tags-db))
@@ -2058,6 +2170,7 @@ tag."
           (insert (propertize "Selected timestamps" 'face 'magit-section-heading))
           (magit-insert-heading)
           (org-journal-tags--buffer-render-timestamps)))
+      (org-journal-tags--buffer-render-on-this-day)
       (magit-insert-section (org-journal-tags)
         (insert (propertize "All tags" 'face 'magit-section-heading))
         (magit-insert-heading)
