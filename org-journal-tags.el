@@ -1931,8 +1931,9 @@ BODY is put in that lambda."
                                 (interactive)
                                 (quit-window t)))
     (when (fboundp #'evil-define-key*)
-      (evil-define-key* 'normal map
+      (evil-define-key* '(normal motion) map
         (kbd "<tab>") #'magit-section-toggle
+        (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point
         "s" #'org-journal-tags-transient-query
         "n" (org-journal-tags--with-close-status
              (call-interactively
@@ -2396,15 +2397,17 @@ REF is an instance `org-journal-tag-reference'."
 (defun org-journal-tags--buffer-visit-thing-at-point ()
   "Open thing at point in the org-journal-tags query buffer."
   (interactive)
-  (let ((section (magit-current-section)))
-    (cond
-     ((and (slot-exists-p section 'ref)
-           (slot-boundp section 'ref))
-      (org-journal-tags--goto-ref (oref section ref)))
-     ((and (slot-exists-p section 'date)
-           (slot-boundp section 'date))
-      (org-journal-tags--goto-date (oref section date)))
-     (t (user-error "Nothing to visit at point")))))
+  (if (get-char-property (point) 'button)
+      (widget-button-press (point))
+    (let ((section (magit-current-section)))
+      (cond
+       ((and (slot-exists-p section 'ref)
+             (slot-boundp section 'ref))
+        (org-journal-tags--goto-ref (oref section ref)))
+       ((and (slot-exists-p section 'date)
+             (slot-boundp section 'date))
+        (org-journal-tags--goto-date (oref section date)))
+       (t (user-error "Nothing to visit at point"))))))
 
 (defun org-journal-tags--buffer-render-query (refs)
   "Render the contents of the org-journal-tags query buffer.
