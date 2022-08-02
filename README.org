@@ -4,21 +4,22 @@
 
 A package to make sense of +my life+ [[https://github.com/bastibe/org-journal][org-journal]] records.
 
-The package adds the =org-journal:= link type to Org Mode. When placed in an org-journal file, it serves as a "tag" that references one or many paragraphs of the journal or the entire section. These tags are aggregated in the database that can be queried in various ways.
+The package adds the =org-journal:= link type to Org Mode. When placed in an org-journal file, the link serves as a "tag" that references one or many paragraphs of the journal or the entire section. These tags are aggregated in the database that can be queried in various ways.
 
 * Rationale
-Journal files, by their very nature, are weakly structured. One journal note can reference multiple entities (or none) and can itself be composed of multiple parts that only have in common the date and time in which they were written. Needless to say, it's hard to find anything in such records.
+Journal files, by their very nature, are weakly structured. A single journal note can reference multiple entities (or none) and can itself be composed of multiple parts that have in common only the date and time when they were written. Needless to say, it's hard to find anything in such records.
 
-This package attempts to increase the accessiblity of the journal by:
-- Taking advantage of the temporal data, e.g. allowing to query entries in some date range.
-- Allowing to extract (and reference) only some parts of a particular journal entry.
-- Compensating weak structure by a more advanced query engine.
+This package attempts to improve the accessibility of the journal by:
+- Taking advantage of temporal data, e.g. allowing to query entries in some date range.
+- Allowing to extract (and reference) only certain parts of a particular journal entry.
+- Compensating weak structure by with more advanced query engine.
 
-For instance, when I'm writing down the progress on a job project, I can leave a tag like =job.<project-name>= in the paragraph(s) related to that project. Later, I can query only those paragraphs that are referenced by this particular tag. The query results can be then narrowed, for instance, to include the word "backend", or extended with some other tag.
+For instance, when I'm writing down the progress on a job project, I can leave a tag like =job.<project-name>= in the paragraph(s) related to that project. Later, I can query only those paragraphs that are referenced by this particular tag. The query results can then be narrowed, for instance, to include the word "backend", or extended with some other tag.
 
-If no tag fits the subject matter, the journal can be queried by regular expression, e.g. by searching some regex within a specific time frame. Subsequent searches are also significantly faster than the built-in org-journal search functionality because of caching of the journal files.
+If no tag matches the subject matter, the journal can be queried with a regular expression, e.g. by searching some regex within a specific time frame. Subsequent searches are also significantly faster than the built-in =org-journal= search functionality due to the to caching mechanism.
 * Installation
 The package is available on MELPA. Install it however you normally install packages, my preferred way is =use-package= with =straight=:
+
 #+begin_src emacs-lisp
 (use-package org-journal-tags
   :straight t
@@ -33,7 +34,7 @@ To add an inline tag, you can manually create a link of the following format:
 [[org-journal:<tag-name>][<tag-description>]]
 #+end_example
 
-Or run =M-x org-journal-tags-insert-tag= to insert a tag with a completion interface. The description is not aggregated and thus optional.
+Or run =M-x org-journal-tags-insert-tag= to insert a tag with a completion interface. The description is not aggregated and thus optional. Also, =<tag-name>= cannot contain =:=.
 
 The link will reference the current Org Mode paragraph. If you want to reference more paragraphs, you can set the number of paragraphs like this:
 #+begin_example
@@ -45,6 +46,22 @@ Run =M-x org-journal-tags-link-get-region-at-point= to select the referenced reg
 To add a tag to the entire section, run =M-x org-journal-tags-prop-set=, which will create or update the =Tags= property in the property drawer of the current time section. This command features a notmuch-like UI, i.e. completing read for multiple entries, where =+<tag>= adds a tag and =-<tag>= deletes a tag.
 
 If you decide to rename a tag, there's =M-x org-journal-tags-refactor=.
+** Tag kinds
+Tag kind is a predefined class of tag with some extra functionality. The link format fo such tags is as follows:
+
+#+begin_example
+[[org-journal:<kind>:<tag-name>][<tag-description>]]
+[[org-journal:<kind>:<tag-name>::<number-of-paragraphs>][<tag-description>]]
+#+end_example
+
+If =<kind>= is omitted, a tag is considered "normal".
+
+Running =C-u M-x org-journal-tags-insert-tag= will first prompt for the tag kind and then for the tag itself from the set of already used tags of that kind.
+
+Running =C-u C-u M-x org-journal-tags-insert-tag= will also first prompt for the tag kind, but then will try to invoke the kind-specific tag selection logic, if such is available. For instance, the =contact= kind will prompt the =org-contacts= database.
+
+For now, the only available tag kind is [[https://repo.or.cz/org-contacts.git][org-contacts]].
+
 ** Adding timestamps
 In addition to tags, the package also aggregates inline timestamps, i.e. timestamps that are left in the text like this:
 
@@ -86,6 +103,7 @@ The options are as follows:
 - *Include tags* filters the references so that each reference had at least one of these tags.
 - *Exclude tags* filters the references so that each reference didn't have any of these tags.
 - *Include children* includes child tags to the previous two lists.
+- *Tag location* can filter only section tags on inline tags.
 - *Start date* and *End date* filter the references by date.
 - *Filter timestamps* filters the references so that they include a timestamp.
 - *Timestamp start date* and *Timestamp end date* filter
