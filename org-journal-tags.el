@@ -4,7 +4,7 @@
 
 ;; Author: Korytov Pavel <thexcloud@gmail.com>
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0") (transient "0.3.7"))
 ;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags
 
@@ -378,7 +378,7 @@ The properties are:
     (:files . ,(make-hash-table :test #'equal))
     (:dates . ,(make-hash-table))
     (:files-dates . ,(make-hash-table :test #'equal))
-    (:version 3)))
+    (:version . 3)))
 
 (defun org-journal-tags-db--migrate ()
   "Migrate the org-journal-tags database."
