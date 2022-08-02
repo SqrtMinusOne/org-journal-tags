@@ -546,6 +546,13 @@ little sense.  Available parameters are as follows:
      ;; TODO check if `tag-kind' exists
      (t (intern tag-kind)))))
 
+(defun org-journal-tags--get-tag-name-without-kind (tag)
+  "String tag kind from TAG."
+  (replace-regexp-in-string
+   (rx bos (+ alnum) ":")
+   ""
+   tag))
+
 (defun org-journal-tags--follow-query (tag)
   "Open org-journal-tags query transient for TAG."
   (let ((org-journal-tags--query-params
@@ -596,11 +603,7 @@ of all tags of the selected kind, otherwise try to use
                 (completing-read
                  "Tag name: "
                  (mapcar
-                  (lambda (tag-name)
-                    (replace-regexp-in-string
-                     (rx bos (* alnum) ":")
-                     ""
-                     tag-name))
+                  #'org-journal-tags--get-tag-name-without-kind
                   (org-journal-tags--get-tag-names-of-kind kind))))))
         (if kind
             (format "%s:%s" kind tag-name)
@@ -664,11 +667,7 @@ LINK is either Org element or string."
   "Default formatting function for new org journal tags.
 
 TAG is a string with the tag name."
-  (let ((tag-title
-         (replace-regexp-in-string
-          (rx bos (+ alnum) ":")
-          ""
-          tag)))
+  (let ((tag-title (org-journal-tags--get-tag-name-without-kind tag)))
     (format "[[org-journal:%s][#%s]]" tag tag-title)))
 
 (defun org-journal-tags--ensure-decrypted ()
@@ -1819,23 +1818,35 @@ the rest are date numbers.  Such a list is constructed by
   "Rename SOURCE-TAG-NAME to TARGET-TAG-NAME in the buffer.
 
 This function targets only inline links."
-  (save-excursion
-    (mapc
-     (lambda (link)
-       (let (case-fold-search
-             (start (org-element-property :begin link))
-             (end (org-element-property :end link)))
-         (goto-char end)
-         (while (search-backward source-tag-name start t)
-           (delete-region (match-beginning 0) (match-end 0))
-           (insert target-tag-name))))
-     (seq-reverse
-      (org-element-map (org-element-parse-buffer) 'link
-        (lambda (link)
-          (when (and (string= (org-element-property :type link) "org-journal")
-                     (string= source-tag-name
-                              (org-journal-tags--links-get-tag link)))
-            link)))))))
+  (let* ((source-tag-name-no-kind
+          (org-journal-tags--get-tag-name-without-kind source-tag-name))
+         (target-tag-name-no-kind
+          (org-journal-tags--get-tag-name-without-kind target-tag-name))
+         (source-has-kind
+          (not (string-equal source-tag-name-no-kind source-tag-name))))
+    (save-excursion
+      (mapc
+       (lambda (link)
+         (let (case-fold-search
+               (start (org-element-property :begin link))
+               (end (org-element-property :end link)))
+           (goto-char end)
+           (when source-has-kind
+             (save-excursion
+               (when (search-backward (concat "#" source-tag-name-no-kind) start t)
+                 (replace-match (concat "#" target-tag-name-no-kind)))))
+           (while (search-backward source-tag-name start t)
+             (delete-region (match-beginning 0) (match-end 0))
+             (if (eq (char-before) ?#)
+                 (insert target-tag-name-no-kind)
+               (insert target-tag-name)))))
+       (seq-reverse
+        (org-element-map (org-element-parse-buffer) 'link
+          (lambda (link)
+            (when (and (string= (org-element-property :type link) "org-journal")
+                       (string= source-tag-name
+                                (org-journal-tags--links-get-tag link)))
+              link))))))))
 
 (defun org-journal-tags--refactor-buffer-section (source-tag-name target-tag-name)
   "Rename SOURCE-TAG-NAME to TARGET-TAG-NAME in the buffer.
@@ -2179,10 +2190,7 @@ tag."
                                      (org-journal-tags-transient-query)))
                          :tag-name tag-name
                          (org-journal-tags--string-pad
-                          (replace-regexp-in-string
-                           (rx bos (* alnum) ":")
-                           ""
-                           tag-name)
+                          (org-journal-tags--get-tag-name-without-kind tag-name)
                           max-tag-name))
           (widget-insert " ")
           (org-journal-tags--buffer-render-horizontal-barchart
