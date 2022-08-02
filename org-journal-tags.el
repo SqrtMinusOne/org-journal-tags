@@ -2637,7 +2637,8 @@ are as follows:
 OBJ is an instance of the `org-journal-tags--transient-switches'
 class."
   (let ((choices (oref obj choices)))
-    (let ((idx (cl-position (oref obj value) choices)))
+    (let ((idx (or (cl-position (oref obj value) choices)
+                   -1)))
       (nth (% (1+ idx) (length choices)) choices))))
 
 (cl-defmethod transient-format-value ((obj org-journal-tags--transient-switches))
