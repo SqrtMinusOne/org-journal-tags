@@ -4,7 +4,7 @@
 
 ;; Author: Korytov Pavel <thexcloud@gmail.com>
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
-;; Version: 0.3.0
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0") (transient "0.3.7"))
 ;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags
 
@@ -32,8 +32,9 @@
 ;; ways.
 ;;
 ;; The tag format is as follows:
-;; [[org-journal:<tag-name>::<number-of-paragraphs>][<tag-description>]]
-;; where the "::<number-of-paragraphs>" part is optional.
+;; [[org-journal:<kind>:<tag-name>::<number-of-paragraphs>][<tag-description>]]
+;; where the ":<kind>" and "::<number-of-paragraphs>" part is
+;; optional.
 ;;
 ;; Enabling `org-journal-tags-autosync-mode' syncronizes these tags
 ;; with the database at the moment of saving the org-journal buffer.
@@ -68,6 +69,8 @@
 ;; the code.
 (declare-function evil-define-key* "evil-core")
 
+;; Same with org-contacts.
+(declare-function org-contacts-db "org-contacts")
 
 (defgroup org-journal-tags ()
   "Tagging and querying system for org-journal."
@@ -125,6 +128,11 @@ Also take a look at `org-journal-tags-db-load' and
 (defface org-journal-tags-time-header
   '((t (:inherit magit-section-secondary-heading)))
   "A face for time headings in the query result buffer."
+  :group 'org-journal-tags)
+
+(defface org-journal-tags-on-this-day-time-header
+  '((t (:inherit success)))
+  "A face for time headings in the \"On this day\" section."
   :group 'org-journal-tags)
 
 (defcustom org-journal-tags-face-function #'org-journal-tags--face-default
@@ -209,17 +217,33 @@ timestamps between today and +14 days from today."
                                 (choice (integer :tag "Timestamp")
                                         (const :tag "Do not filter" nil)))))))
 
+(defcustom org-journal-tags-on-this-day-breakpoints
+  `(("1 year ago" . (:year -1))
+    ,@(cl-loop for year from 2 to 25
+               collect (cons (format "%d years ago" year)
+                             (list :year (- year)))))
+  "Whether and how to display the \"On this day\" section.
+
+If nil, do not display.
+
+Otherwise, this is a list of cons cells, where the car is the display
+name and the value is a plist of parameters that is passed to
+`make-decoded-time'."
+  :group 'org-journal-tags
+  :type '(choice (const :tag "Do not display")
+                 (repeat :tag "Display parameters"
+                         (cons (string :tag "Description")
+                               (plist
+                                :key-type (choice (const :tag "Year" :year)
+                                                  (const :tag "Month" :month)
+                                                  (const :tag "Day" :day))
+                                :value-type integer)))))
+
 (defconst org-journal-tags-query-buffer-name "*org-journal-query*"
   "Default buffer name for org-journal-tags quieries.")
 
 (defconst org-journal-tags-status-buffer-name "*org-journal-tags*"
   "Default buffer name for org-journal-tags status.")
-
-(defun org-journal-tags--format-new-tag-default (tag)
-  "Default formatting function for new org journal tags.
-
-TAG is a string with the tag name."
-  (format "[[org-journal:%s][#%s]]" tag tag))
 
 (defun org-journal-tags--face-default (&rest _)
   "Return the default tag face."
@@ -275,13 +299,50 @@ the string."
       (push (cdr x) res))
     (nreverse res)))
 
+;; XXX copied from `decoded-time-add'
+(defun org-journal-tags--decoded-time-add (time delta)
+  "Add DELTA to TIME, both of which are `decoded-time' structures.
+TIME should represent a time, while DELTA should have non-nil
+entries only for the values that should be altered.
+
+This function is a version of `decoded-time-add' which takes into
+account only the year, month and day fields of DELTA.  This is so
+because `time-convert' in the original function spams \"obsolete
+timestamp\" to the console if DELTA has some fields set to nil."
+  (let ((time (copy-sequence time)))
+    ;; Years are simple.
+    (when (decoded-time-year delta)
+      (cl-incf (decoded-time-year time) (decoded-time-year delta)))
+
+    ;; Months are pretty simple, but start at 1 (for January).
+    (when (decoded-time-month delta)
+      (let ((new (+ (1- (decoded-time-month time)) (decoded-time-month delta))))
+        (setf (decoded-time-month time) (1+ (mod new 12)))
+        (cl-incf (decoded-time-year time) (/ new 12))))
+
+    ;; Adjust for month length (as described in the doc string).
+    (setf (decoded-time-day time)
+          (min (date-days-in-month (decoded-time-year time)
+                                   (decoded-time-month time))
+               (decoded-time-day time)))
+
+    ;; Days are iterative.
+    (when-let* ((days (decoded-time-day delta)))
+      (let ((increase (> days 0))
+            (days (abs days)))
+        (while (> days 0)
+          (decoded-time--alter-day time increase)
+          (cl-decf days))))
+
+    time))
+
 ;; Data model and database
 
 (cl-defstruct (org-journal-tag (:constructor org-journal-tag--create))
   "A structure that holds one org journal tag.
 
 The properties are:
-- `:name': Tag name.
+- `:name': Tag name. \":\" is a reserved character.
 - `:dates': Hash map with timestamps as keys and lists of
   `org-journal-tag-reference' as values."
   name
@@ -293,10 +354,13 @@ The properties are:
 The properties are:
 - `:ref-start': Start of the referenced region.
 - `:ref-end': End of the referenced region.
+- `:loc': Location of the reference:
+  - `inline': Inline reference.
+  - `section': Section reference.
 - `:time': A string that holds the time of the reference record.
   Doesn't have to be in any particular format.
 - `:date': A timestamp with the date of the referenced record."
-  ref-start ref-end time date)
+  ref-start ref-end loc time date)
 
 (cl-defstruct (org-journal-timestamp (:constructor org-journal-timestamp--create))
   "A structure that holds one timestamp reference in org-journal.
@@ -314,13 +378,13 @@ The properties are:
     (:files . ,(make-hash-table :test #'equal))
     (:dates . ,(make-hash-table))
     (:files-dates . ,(make-hash-table :test #'equal))
-    (:version 2)))
+    (:version . 3)))
 
 (defun org-journal-tags-db--migrate ()
   "Migrate the org-journal-tags database."
   (let ((version (alist-get :version org-journal-tags-db)))
     (cond
-     ((null version)
+     ((or (null version) (= version 2))
       (message "Database has been reset due to update")
       (setf org-journal-tags-db (org-journal-tags-db--empty))))))
 
@@ -391,16 +455,98 @@ record in the journal."
   (org-journal-tags-db-save)
   (setf org-journal-tags-db nil))
 
+;; Tag kinds
+(defvar org-journal-tags-kinds '()
+  "Tag kinds settings.
+
+This is an alist, where the key is the tag kind and the value
+is an alist with parameters.  Take a look at the
+`org-journal-tags-define-tag-kind' macro for possible parameters.")
+
+(defmacro org-journal-tags-define-tag-kind (name &rest props)
+  "Define a new tag kind.
+
+NAME is the kind name, PROPS is a plist of parameters.  All the
+parameters are optional, but having a kind with zero parameters makes
+little sense.  Available parameters are as follows:
+- `:completion-function': A function that completes a tag name, e.g. by
+  invoking `completing-read' against some external database.  Should
+  return the tag name (without the kind prefix)
+- `:follow-function': A function to invoke on following the link with
+  a prefix argument.
+- `:name': Name to display in the `org-journal-tags-status'."
+  (declare (indent defun))
+  (cl-loop for (key) on props by #'cddr
+           unless (memq key '(:completion-function :follow-function :name))
+           do (error "Wrong parameter %s" key))
+  `(setf (alist-get ',name org-journal-tags-kinds)
+         (let ((alist-props
+                (cl-loop for (key value) on (list ,@props) by #'cddr
+                         collect (cons key value))))
+           alist-props)))
+
+(defun org-journal-tags--get-kinds ()
+  "Return all defined tag kinds."
+  (cl-loop for (kind . props) in org-journal-tags-kinds
+           collect (cons (symbol-name kind) kind) into res
+           finally return (cons
+                           (cons "none" nil) res)))
+
+(defun org-journal-tags--get-tag-names-of-kind (kind)
+  "Return all tags names of kind KIND."
+  (cl-loop for tag-name being the hash-keys of
+           (alist-get :tags org-journal-tags-db)
+           for tag-kind = (org-journal-tags--get-tag-kind tag-name)
+           if (equal tag-kind kind)
+           collect tag-name))
+
+(defun org-journal-tags--get-tag-names-by-kind ()
+  "Get tag names grouped by kind."
+  (cl-loop with result = (list (cons nil nil))
+           for tag-name being the hash-keys of (alist-get :tags org-journal-tags-db)
+           for tag-kind = (org-journal-tags--get-tag-kind tag-name)
+           if (org-journal-tags--valid-tag-p tag-name)
+           do (setf (alist-get tag-kind result)
+                    (cons tag-name (alist-get tag-kind result)))
+           finally return (mapcar
+                           (lambda (x)
+                             (cons (car x)
+                                   (seq-sort #'string-lessp (cdr x))))
+                           (nreverse result))))
+
+(defun org-journal-tags--get-kind-display-name (kind)
+  "Get the display name of KIND."
+  (if (null kind)
+      "No category"
+    (or (alist-get :name
+                   (alist-get kind org-journal-tags-kinds))
+        (symbol-name kind))))
 
 ;; Org link
 
-(defun org-journal-tags--follow (tag _prefix)
+(defun org-journal-tags--get-tag-name (tag)
+  "Extract tag name from TAG."
+  (replace-regexp-in-string
+   (rx "::" (* nonl) eos)
+   ""
+   tag))
+
+(defun org-journal-tags--get-tag-kind (tag)
+  "Extract tag kind from TAG."
+  (let* ((tag-name (org-journal-tags--get-tag-name tag))
+         (tag-kind (replace-regexp-in-string
+                    (rx ":" (* nonl) eos)
+                    ""
+                    tag-name)))
+    (cond
+     ((string-equal tag-name tag-kind) nil)
+     ;; TODO check if `tag-kind' exists
+     (t (intern tag-kind)))))
+
+(defun org-journal-tags--follow-query (tag)
   "Open org-journal-tags query transient for TAG."
   (let ((org-journal-tags--query-params
-         `((:tag-names . (,(replace-regexp-in-string
-                            (rx "::" (* nonl) eos)
-                            ""
-                            tag))))))
+         `((:tag-names . (,(org-journal-tags--get-tag-name tag))))))
     ;; XXX `org-journal-tags--query-params' is used in the init-value
     ;; method of infixes of the `org-journal-tags-transient-query'.  I
     ;; have no idea how else to silence the "Unused lexical variable"
@@ -408,12 +554,64 @@ record in the journal."
     (ignore org-journal-tags--query-params)
     (org-journal-tags-transient-query)))
 
-(defun org-journal-tags--complete (&optional _)
-  "Create an org-journal-tags link using completion."
+(defun org-journal-tags--follow-kind (tag)
+  "Execute `:follow-function' for TAG kind if available."
+  (if-let* ((kind (org-journal-tags--get-tag-kind tag))
+            (follow-function
+             (alist-get :follow-function
+                        (alist-get kind org-journal-tags-kinds))))
+      (funcall follow-function tag)
+    (org-journal-tags--follow-query tag)))
+
+(defun org-journal-tags--follow (tag prefix)
+  "Follow org-journal-tag link for TAG.
+
+PREFIX is the universal prefix argument."
+  (pcase prefix
+    ('nil (org-journal-tags--follow-query tag))
+    ('(4) (org-journal-tags--follow-kind tag))))
+
+(defun org-journal-tags--completing-read (&optional use-kind kind-completion)
+  "Read a tag from the minibuffer.
+
+If USE-KIND is nil, query from the list of all tags.  Otherwise, query
+the kind first.  Then, if KIND-COMPLETION is nil, query from the list
+of all tags of the selected kind, otherwise try to use
+`:completion-function' for that kind."
+  (if use-kind
+      (let* ((kinds (org-journal-tags--get-kinds))
+             (kind (alist-get
+                    (completing-read "Tag kind: " kinds)
+                    kinds nil nil #'equal))
+             (kind-completion-function
+              (when kind-completion
+                (alist-get :completion-function
+                           (alist-get 'contact org-journal-tags-kinds))))
+             (tag-name
+              (if kind-completion-function
+                  (funcall kind-completion-function)
+                (completing-read
+                 "Tag name: "
+                 (mapcar
+                  (lambda (tag-name)
+                    (replace-regexp-in-string
+                     (rx bos (* alnum) ":")
+                     ""
+                     tag-name))
+                  (org-journal-tags--get-tag-names-of-kind kind))))))
+        (if kind
+            (format "%s:%s" kind tag-name)
+          tag-name))
+    (completing-read
+     "Tag: "
+     (org-journal-tags--list-tags))))
+
+(defun org-journal-tags--complete (&optional prefix)
+  "Create an org-journal-tags link using completion.
+
+PREFIX is the universal prefix argument."
   (org-journal-tags-db-ensure)
-  (let ((name (completing-read
-               "Tag: "
-               (org-journal-tags--list-tags))))
+  (let ((name (org-journal-tags--completing-read prefix)))
     (unless (org-journal-tags--valid-tag-p name)
       (user-error "Invalid tag name: %s" name))
     (format "org-journal:%s" name)))
@@ -425,15 +623,30 @@ record in the journal."
  :face (lambda (&rest args) (funcall org-journal-tags-face-function args)))
 
 
-;; Tags extraction and persistence
+;; Tag kinds
 
-(defun org-journal-tags--ensure-decrypted ()
-  "Ensure that the current org-journal buffer is decrypted."
-  (when org-journal-enable-encryption
-    (save-excursion
-      (goto-char (point-min))
-      (while (search-forward ":crypt:" nil t)
-        (org-decrypt-entry)))))
+(defun org-journal-tags--org-contacts-complete ()
+  "Complete org-journal-tags tag with `org-contacts'."
+  (unless (fboundp #'org-contacts-db)
+    (user-error "Org Contacts is unavailable"))
+  (let* ((contacts (org-contacts-db))
+         (contact-data
+          (mapcar
+           (lambda (contact)
+             (let ((contact-name
+                    (or (alist-get "JOURNAL_NAME" (nth 2 contact) nil nil #'equal)
+                        (substring-no-properties (car contact)))))
+               (cons contact-name contact)))
+           contacts))
+         (contact-name
+          (completing-read "Contact: " contact-data)))
+    contact-name))
+
+(org-journal-tags-define-tag-kind contact
+  :name "Org Contacts"
+  :completion-function #'org-journal-tags--org-contacts-complete)
+
+;; Tags extraction and persistence
 
 (defun org-journal-tags--links-get-tag (link)
   "Get tag name from LINK.
@@ -443,6 +656,25 @@ LINK is either Org element or string."
    (rx "::" (* nonl) eos)
    ""
    (or (org-element-property :path link) link)))
+
+(defun org-journal-tags--format-new-tag-default (tag)
+  "Default formatting function for new org journal tags.
+
+TAG is a string with the tag name."
+  (let ((tag-title
+         (replace-regexp-in-string
+          (rx bos (+ alnum) ":")
+          ""
+          tag)))
+    (format "[[org-journal:%s][#%s]]" tag tag-title)))
+
+(defun org-journal-tags--ensure-decrypted ()
+  "Ensure that the current org-journal buffer is decrypted."
+  (when org-journal-enable-encryption
+    (save-excursion
+      (goto-char (point-min))
+      (while (search-forward ":crypt:" nil t)
+        (org-decrypt-entry)))))
 
 (defun org-journal-tags--get-element-parent (elem type)
   "Get the first parent of ELEM of the type TYPE.
@@ -485,7 +717,7 @@ The point should be exactly at the beginning of the link."
     (unless link
       (user-error "No link found at point"))
     (unless (string-equal (org-element-property :type link) "org-journal")
-      (user-error "Link is not of the \"org-jounral\" type"))
+      (user-error "Link is not of the \"org-journal\" type"))
     (let ((region (org-journal-tags--links-inline-get-region
                    (org-element-map (org-element-parse-buffer) 'link
                      (lambda (elem)
@@ -544,6 +776,7 @@ paragraphs."
                   (region (org-journal-tags--links-inline-get-region link))
                   (elem (org-element-property :parent link))
                   (ref (org-journal-tags--links-extract-one elem region)))
+        (setf (org-journal-tag-reference-loc ref) 'inline)
         (cons tag ref)))))
 
 (defun org-journal-tags--links-parse-link-str (str)
@@ -599,6 +832,7 @@ every section."
                      (ref (org-journal-tag-reference--create
                            :ref-start (org-element-property :contents-begin elem)
                            :ref-end (org-element-property :contents-end elem)
+                           :loc 'section
                            :time (org-element-property :raw-value elem)
                            :date created)))
             (when add-empty
@@ -912,18 +1146,29 @@ list of tags to remove."
          :remove remove-tags-res)))))
 
 ;;;###autoload
-(defun org-journal-tags-insert-tag ()
-  "Insert org-journal tag at point."
-  (interactive)
+(defun org-journal-tags-insert-tag (prefix)
+  "Insert org-journal tag at point.
+
+PREFIX is the universal prefix argument.  If invoked with
+\\[universal-argument], then first query for the kind of tag, then for
+the tag itself from the set of already used tags of that kind.
+
+If invoked with double \\[universal-argument], then query the tag
+from the kind-specific source instead of already used tags, if such a
+source is available."
+  (interactive "P")
   (org-journal-tags-db-ensure)
   (insert
-   (let ((name (completing-read
-                "Tag: "
-                (org-journal-tags--list-tags))))
+   (let ((name
+          (pcase prefix
+            ('nil (org-journal-tags--completing-read))
+            ('(4) (org-journal-tags--completing-read t))
+            ('(16) (org-journal-tags--completing-read t t)))))
      (unless (org-journal-tags--valid-tag-p name)
        (user-error "Invalid tag name: %s" name))
      (funcall org-journal-tags-format-new-tag-function
               name))))
+
 ;; Global setup
 
 (defun org-journal-tags--setup-buffer ()
@@ -1340,6 +1585,19 @@ returned."
                 collect tag-name))
     '("")))
 
+(defun org-journal-tags--query-filter-location (refs location)
+  "Filter REFS by LOCATION.
+
+LOCATION can be `section', `inline', or `both'.  REFS is a list of
+`org-journal-tag-reference'."
+  (pcase location
+    ((or 'both 'nil)
+     refs)
+    (_ (seq-filter
+        (lambda (ref)
+          (eq (org-journal-tag-reference-loc ref) location))
+        refs))))
+
 (defvar org-journal-tags--files-cache (make-hash-table :test #'equal)
   "A cache for org-journal files used to speed up queries.
 
@@ -1443,7 +1701,8 @@ of `org-journal-timestamp'."
 
 (cl-defun org-journal-tags-query (&key tag-names exclude-tag-names start-date
                                        end-date regex regex-narrow children order
-                                       timestamps timestamp-start-date timestamp-end-date)
+                                       timestamps timestamp-start-date timestamp-end-date
+                                       location)
   "Query the org-journal-tags database.
 
 All the keys are optional.
@@ -1474,6 +1733,7 @@ The returned value is a list of `org-journal-tag-reference'."
     (setq results (org-journal-tags--query-get-tags-references
                    (org-journal-tags--query-get-tag-names tag-names children)
                    dates))
+    (setq results (org-journal-tags--query-filter-location results location))
     (when timestamps
       (setq results
             (org-journal-tags--query-intersect-refs
@@ -1603,11 +1863,11 @@ If called interactively, prompt for both."
   (interactive
    (progn
      (org-journal-tags-db-ensure)
-     (let ((source-tag (completing-read
-                        "Source tag: "
-                        (org-journal-tags--list-tags)))
-           (target-tag
-            (read-from-minibuffer "Target tag: ")))
+     (let* ((source-tag (org-journal-tags--completing-read
+                         current-prefix-arg
+                         (equal current-prefix-arg '(16))))
+            (target-tag
+             (read-from-minibuffer (format "Change %s to: " source-tag))))
        (unless (org-journal-tags--valid-tag-p target-tag)
          (user-error "Invalid target tag name: %s" target-tag))
        (unless (member source-tag (org-journal-tags--list-tags))
@@ -1670,8 +1930,9 @@ BODY is put in that lambda."
                                 (interactive)
                                 (quit-window t)))
     (when (fboundp #'evil-define-key*)
-      (evil-define-key* 'normal map
+      (evil-define-key* '(normal motion) map
         (kbd "<tab>") #'magit-section-toggle
+        (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point
         "s" #'org-journal-tags-transient-query
         "n" (org-journal-tags--with-close-status
              (call-interactively
@@ -1773,6 +2034,93 @@ BODY is put in that lambda."
           (insert "\n"))
       (insert "No timestamps found\n\n"))))
 
+(defun org-journal-tags--on-this-day-get-dates ()
+  "Get the list of dates for the \"On this day\" section."
+  (cl-loop for (description . params) in org-journal-tags-on-this-day-breakpoints
+           collect (let ((time (org-journal-tags--decoded-time-add
+                                (decode-time)
+                                (apply #'make-decoded-time params))))
+                     (setf (decoded-time-second time) 0
+                           (decoded-time-minute time) 0
+                           (decoded-time-hour time) 0)
+                     (cons description
+                           (time-convert
+                            (encode-time
+                             time)
+                            'integer)))))
+
+(defun org-journal-tags--fill-paragraph-string (string)
+  "Use Org Mode to fill STRING to some fixed width."
+  (with-temp-buffer
+    (insert string)
+    (goto-char (point-min))
+    (let ((point -1)
+          (can-move t))
+      (while can-move
+        ;; XXX `org-fill-paragraph' seems to choke on some source
+        ;; blocks, and it makes little sense to change them anyway
+        (let ((elem-type (org-element-type
+                          (save-excursion
+                            (end-of-line)
+                            (org-element-at-point)))))
+          (unless (memq elem-type '(src-block))
+            (org-fill-paragraph)))
+        (org-forward-paragraph)
+        (setq can-move (not (eq point (point)))
+              point (point)))
+      (buffer-string))))
+
+(defun org-journal-tags--buffer-render-on-this-day ()
+  "Render the \"On this day\" section."
+  (when-let ((look-dates (org-journal-tags--on-this-day-get-dates))
+             (refs (org-journal-tags--get-all-tag-references ""))
+             (refs-hash (make-hash-table)))
+    (cl-loop for datum in look-dates
+             for date = (cdr datum)
+             do (puthash date nil refs-hash))
+    (cl-loop for ref in refs
+             for date = (org-journal-tag-reference-date ref)
+             unless (eq (gethash date refs-hash 'not-found) 'not-found)
+             do (push ref (gethash date refs-hash)))
+    (when-let (found-dates
+               (cl-loop for datum in look-dates
+                        for date = (cdr datum)
+                        if (gethash date refs-hash)
+                        collect datum))
+      (magit-insert-section (org-journal-tags-on-this-day)
+        (insert (propertize "On this day" 'face 'magit-section-heading))
+        (magit-insert-heading)
+        (cl-loop
+         for (description . date) in found-dates
+         for refs = (gethash date refs-hash)
+         do (magit-insert-section (org-journal-tags-on-this-day-date date t)
+              (insert
+               (propertize
+                (format
+                 "%s, %s"
+                 description
+                 (format-time-string org-journal-date-format date))
+                'face 'magit-section-secondary-heading))
+              (magit-insert-heading)
+              (cl-loop
+               for ref in refs
+               for preview = (org-journal-tags--fill-paragraph-string
+                              (org-journal-tags--extract-ref ref))
+               do (magit-insert-section section (org-journal-tags-time-section nil t)
+                    (thread-last
+                      ref
+                      org-journal-tag-reference-time
+                      (format "%s\n")
+                      (funcall
+                       (lambda (s)
+                         (propertize s 'face
+                                     'org-journal-tags-on-this-day-time-header)))
+                      insert)
+                    (oset section ref ref)
+                    (magit-insert-heading)
+                    (insert preview "\n"))))))
+      (insert "\n"))))
+
 (defun org-journal-tags--get-all-tag-references (tag-name)
   "Extract all references to TAG-NAME from the database."
   (when (gethash tag-name (alist-get :tags org-journal-tags-db))
@@ -1781,35 +2129,65 @@ BODY is put in that lambda."
               (gethash tag-name (alist-get :tags org-journal-tags-db)))
              append refs)))
 
+(defmacro org-journal-tags--magit-insert-section-maybe (section-params cond &rest body)
+  "If COND is non-nil, wrap BODY in `magit-insert-section'.
+
+SECTION-PARAMS is the first form of the section."
+  (declare (indent 2))
+  `(if ,cond
+       (magit-insert-section ,section-params
+         ,@body)
+     ,@body))
+
 (defun org-journal-tags--buffer-render-tag-buttons ()
   "Render tag buttons for the org-journal-tags status buffer.
 
 This function creates a button and a horizontal barchart for each
 tag."
-  (when-let* ((tag-names (seq-sort #'string-lessp (org-journal-tags--list-tags)))
+  (when-let* ((tag-names-by-kind (org-journal-tags--get-tag-names-by-kind))
               (dates-list (org-journal-tags--get-dates-list
                            (org-journal-tags--query-sort-refs
                             (org-journal-tags--get-all-tag-references ""))))
-              (max-tag-name (seq-max (mapcar #'length tag-names))))
-    (dolist (tag-name tag-names)
-      (widget-create 'push-button
-                     :notify (lambda (widget &rest _)
-                               (let ((org-journal-tags--query-params
-                                      `((:tag-names
-                                         . (,(widget-get widget :tag-name))))))
-                                 (ignore org-journal-tags--query-params)
-                                 (org-journal-tags-transient-query)))
-                     :tag-name tag-name
-                     (org-journal-tags--string-pad tag-name max-tag-name))
-      (widget-insert " ")
-      (org-journal-tags--buffer-render-horizontal-barchart
-       (mapcar
-        (lambda (group) (length (alist-get :refs (cdr group))))
-        (org-journal-tags--buffer-get-barchart-data
-         (org-journal-tags--get-all-tag-references tag-name)
-         (- (window-body-width) max-tag-name 2)
-         dates-list)))
-      (widget-insert "\n"))
+              (max-tag-name
+               (seq-max
+                (mapcar
+                 #'length
+                 (cl-loop for item in tag-names-by-kind
+                          for names = (cdr item)
+                          append names))))
+              (need-group-kinds (> (length tag-names-by-kind) 1)))
+    (dolist (kind-datum tag-names-by-kind)
+      (org-journal-tags--magit-insert-section-maybe (org-journal-tags)
+          need-group-kinds
+        (when need-group-kinds
+          (insert (propertize (org-journal-tags--get-kind-display-name
+                               (car kind-datum))
+                              'face 'magit-section-secondary-heading))
+          (magit-insert-heading))
+        (dolist (tag-name (cdr kind-datum))
+          (widget-create 'push-button
+                         :notify (lambda (widget &rest _)
+                                   (let ((org-journal-tags--query-params
+                                          `((:tag-names
+                                             . (,(widget-get widget :tag-name))))))
+                                     (ignore org-journal-tags--query-params)
+                                     (org-journal-tags-transient-query)))
+                         :tag-name tag-name
+                         (org-journal-tags--string-pad
+                          (replace-regexp-in-string
+                           (rx bos (* alnum) ":")
+                           ""
+                           tag-name)
+                          max-tag-name))
+          (widget-insert " ")
+          (org-journal-tags--buffer-render-horizontal-barchart
+           (mapcar
+            (lambda (group) (length (alist-get :refs (cdr group))))
+            (org-journal-tags--buffer-get-barchart-data
+             (org-journal-tags--get-all-tag-references tag-name)
+             (- (window-body-width) max-tag-name 2)
+             dates-list)))
+          (widget-insert "\n"))))
     (widget-setup)))
 
 (defun org-journal-tags--buffer-render-contents ()
@@ -1832,6 +2210,7 @@ tag."
           (insert (propertize "Selected timestamps" 'face 'magit-section-heading))
           (magit-insert-heading)
           (org-journal-tags--buffer-render-timestamps)))
+      (org-journal-tags--buffer-render-on-this-day)
       (magit-insert-section (org-journal-tags)
         (insert (propertize "All tags" 'face 'magit-section-heading))
         (magit-insert-heading)
@@ -2017,15 +2396,17 @@ REF is an instance `org-journal-tag-reference'."
 (defun org-journal-tags--buffer-visit-thing-at-point ()
   "Open thing at point in the org-journal-tags query buffer."
   (interactive)
-  (let ((section (magit-current-section)))
-    (cond
-     ((and (slot-exists-p section 'ref)
-           (slot-boundp section 'ref))
-      (org-journal-tags--goto-ref (oref section ref)))
-     ((and (slot-exists-p section 'date)
-           (slot-boundp section 'date))
-      (org-journal-tags--goto-date (oref section date)))
-     (t (user-error "Nothing to visit at point")))))
+  (if (get-char-property (point) 'button)
+      (widget-button-press (point))
+    (let ((section (magit-current-section)))
+      (cond
+       ((and (slot-exists-p section 'ref)
+             (slot-boundp section 'ref))
+        (org-journal-tags--goto-ref (oref section ref)))
+       ((and (slot-exists-p section 'date)
+             (slot-boundp section 'date))
+        (org-journal-tags--goto-date (oref section date)))
+       (t (user-error "Nothing to visit at point"))))))
 
 (defun org-journal-tags--buffer-render-query (refs)
   "Render the contents of the org-journal-tags query buffer.
@@ -2093,7 +2474,8 @@ REFS is a list org `org-journal-tag-reference'."
 ;; Query transient
 
 (defclass org-journal-tags--transient-variable (transient-variable)
-  ((transient :initform 'transient--do-call))
+  ((transient :initform 'transient--do-call)
+   (default-value :initarg :default-value))
   "A base class for settings in the query buffer.
 
 The name of the variable corresponds to the key in
@@ -2118,7 +2500,11 @@ OBJ is an instance of the `org-journal-tags--transient-variable' class."
   (if (bound-and-true-p org-journal-tags--query-params)
       (oset obj value
             (alist-get (oref obj variable) org-journal-tags--query-params))
-    (oset obj value nil)))
+    (oset obj value
+          (if (and (slot-exists-p obj 'default-value)
+                   (slot-boundp obj 'default-value))
+              (oref obj default-value)
+            nil))))
 
 (cl-defmethod transient-init-value ((obj org-journal-tags--transient-switch-with-variable))
   "Initialize the starting value for the infix.
@@ -2230,6 +2616,47 @@ OBJ is an instance of that class."
          'face 'transient-value)
       (propertize "unset" 'face 'transient-inactive-value))))
 
+(defclass org-journal-tags--transient-switches (org-journal-tags--transient-variable)
+  ((argument-format  :initarg :argument-format)
+   (argument-regexp  :initarg :argument-regexp))
+  "Class used for sets of mutually exclusive command-line switches.
+
+This is inspired by the `transient-switches' class.  The modifications
+are as follows:
+- Inherit from `org-journal-tags--transient-variable'.
+- Do not allow empty values.")
+
+(cl-defmethod transient-infix-read ((obj org-journal-tags--transient-switches))
+  "Cycle through the mutually exclusive switches.
+
+OBJ is an instance of the `org-journal-tags--transient-switches'
+class."
+  (let ((choices (oref obj choices)))
+    (let ((idx (cl-position (oref obj value) choices)))
+      (nth (% (1+ idx) (length choices)) choices))))
+
+(cl-defmethod transient-format-value ((obj org-journal-tags--transient-switches))
+  "Format value of `org-journal-tags--transient-switches'.
+
+OBJ is an instance of that class."
+  (with-slots (value argument-format choices) obj
+    (format (propertize argument-format
+                        'face (if value
+                                  'transient-value
+                                'transient-inactive-value))
+            (concat
+             (propertize "[" 'face 'transient-inactive-value)
+             (mapconcat
+              (lambda (choice)
+                (propertize (format "%s" choice) 'face
+                            (if (equal choice value)
+                                'transient-value
+                              'transient-inactive-value)))
+              choices
+              (propertize "|" 'face 'transient-inactive-value))
+             (propertize "]" 'face 'transient-inactive-value)))))
+
+
 (transient-define-infix org-journal-tags--transient-include-tags ()
   :class 'org-journal-tags--transient-tags
   :variable :tag-names
@@ -2247,6 +2674,14 @@ OBJ is an instance of that class."
   :description "Include child tags"
   :argument "--children"
   :variable :children)
+
+(transient-define-infix org-journal-tags--transient-loc ()
+  :class 'org-journal-tags--transient-switches
+  :description "Tag location"
+  :argument-format "--%s"
+  :default-value 'both
+  :choices '(both inline section)
+  :variable :location)
 
 (transient-define-infix org-journal-tags--transient-start-date ()
   :class 'org-journal-tags--transient-date
@@ -2414,7 +2849,8 @@ sequence of such set operations."
   ["Tags"
    ("ti" org-journal-tags--transient-include-tags)
    ("te" org-journal-tags--transient-exclude-tags)
-   ("tc" org-journal-tags--transient-children)]
+   ("tc" org-journal-tags--transient-children)
+   ("tl" org-journal-tags--transient-loc)]
   ["Date"
    ("ds" org-journal-tags--transient-start-date)
    ("de" org-journal-tags--transient-end-date)]
