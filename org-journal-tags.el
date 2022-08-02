@@ -72,6 +72,9 @@
 ;; Same with org-contacts.
 (declare-function org-contacts-db "org-contacts")
 
+;; And org-encrypt.
+(declare-function org-encrypt-entries "org-crypt")
+
 (defgroup org-journal-tags ()
   "Tagging and querying system for org-journal."
   :group 'org-journal)
@@ -1900,6 +1903,8 @@ If called interactively, prompt for both."
                    source-tag-name target-tag-name)
                   (org-journal-tags--refactor-buffer-section
                    source-tag-name target-tag-name)
+                  (when (fboundp #'org-encrypt-entries)
+                    (org-encrypt-entries))
                   (save-buffer)))))
 
 ;; Status buffer
