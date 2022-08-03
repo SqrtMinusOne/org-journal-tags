@@ -1631,14 +1631,15 @@ properties of REF."
         (let ((org-mode-hook nil))
           (org-mode))
         (org-journal-tags--ensure-decrypted)
-        (org-font-lock-ensure)
+        (font-lock-ensure)
         (puthash file-name (buffer-string)
                  org-journal-tags--files-cache)))
     (string-trim
-     (substring
-      (gethash file-name org-journal-tags--files-cache)
-      (1- (or start (org-journal-tag-reference-ref-start ref)))
-      (1- (or end (org-journal-tag-reference-ref-end ref)))))))
+     (org-link-display-format
+      (substring
+       (gethash file-name org-journal-tags--files-cache)
+       (1- (or start (org-journal-tag-reference-ref-start ref)))
+       (1- (or end (org-journal-tag-reference-ref-end ref))))))))
 
 (defun org-journal-tags--string-match-indices (regex string)
   "Get indices of REGEX matches in STRING."
