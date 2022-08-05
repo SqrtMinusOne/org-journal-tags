@@ -633,6 +633,7 @@ PREFIX is the universal prefix argument."
 
 (defun org-journal-tags--org-contacts-complete ()
   "Complete org-journal-tags tag with `org-contacts'."
+  (require 'org-contacts nil t)
   (unless (fboundp #'org-contacts-db)
     (user-error "Org Contacts is unavailable"))
   (let* ((contacts (org-contacts-db))
