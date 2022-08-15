@@ -1,4 +1,4 @@
-;;; org-journal-tags.el --- Tagging and querying system of org-journal -*- lexical-binding: t -*-
+;;; org-journal-tags.el --- Tagging and querying system for org-journal -*- lexical-binding: t -*-
 
 ;; Copyright (C) 2022 Korytov Pavel
 
