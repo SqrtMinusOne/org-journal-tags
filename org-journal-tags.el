@@ -1957,6 +1957,7 @@ No idea what I'm doing wrong, but this seems to help."
                                (org-journal-open-current-journal-file)))
     (define-key map (kbd "?") #'org-journal-tags--status-transient-help)
     (define-key map (kbd "r") #'org-journal-tags-refactor)
+    (define-key map (kbd "u") #'org-journal-tags-status-refresh)
     (define-key map (kbd "RET") #'widget-button-press)
     (define-key map (kbd "q") (lambda ()
                                 (interactive)
@@ -1973,6 +1974,7 @@ No idea what I'm doing wrong, but this seems to help."
              (org-journal-open-current-journal-file))
         "?" #'org-journal-tags--status-transient-help
         "r" #'org-journal-tags-refactor
+        "u" #'org-journal-tags-status-refresh
         "q" (lambda ()
               (interactive)
               (quit-window t))))
@@ -1988,6 +1990,7 @@ No idea what I'm doing wrong, but this seems to help."
   ["Org Journal"
    ("s" "New query" org-journal-tags-transient-query)
    ("r" "Rename tag" org-journal-tags-refactor)
+   ("u" "Refresh buffer" org-journal-tags-status-refresh)
    ("n" "New journal entry" (lambda nil
                               (interactive)
                               (when (eq major-mode 'org-journal-tags-status-mode)
@@ -2225,7 +2228,8 @@ tag."
     (erase-buffer)
     (setq-local widget-push-button-prefix "")
     (setq-local widget-push-button-suffix "")
-    (org-journal-tags-status-mode)
+    (unless (derived-mode-p #'org-journal-tags-status-mode)
+      (org-journal-tags-status-mode))
     (magit-insert-section (org-journal-tags-info)
       (magit-insert-section (org-journal-tags)
         (insert (format "Date:          %s\n"
@@ -2246,6 +2250,13 @@ tag."
         (org-journal-tags--buffer-render-tag-buttons))))
   (goto-char (point-min)))
 
+(defun org-journal-tags-status-refresh ()
+  "Refresh the current org-journal-status buffer."
+  (interactive)
+  (unless (derived-mode-p 'org-journal-tags-status-mode)
+    (user-error "Not in org-journal-tags-status buffer!"))
+  (org-journal-tags--buffer-render-contents))
+
 ;;;###autoload
 (defun org-journal-tags-status ()
   "Open org-journal-tags status buffer."
@@ -2256,9 +2267,9 @@ tag."
   (when-let ((buffer (get-buffer org-journal-tags-status-buffer-name)))
     (kill-buffer buffer))
   (let ((buffer (get-buffer-create org-journal-tags-status-buffer-name)))
+    (switch-to-buffer-other-window buffer)
     (with-current-buffer buffer
-      (org-journal-tags--buffer-render-contents))
-    (switch-to-buffer-other-window buffer)))
+      (org-journal-tags--buffer-render-contents))))
 
 
 ;; Barcharts
