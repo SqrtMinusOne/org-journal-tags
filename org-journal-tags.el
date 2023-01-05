@@ -1,6 +1,6 @@
 ;;; org-journal-tags.el --- Tagging and querying system for org-journal -*- lexical-binding: t -*-
 
-;; Copyright (C) 2022 Korytov Pavel
+;; Copyright (C) 2023 Korytov Pavel
 
 ;; Author: Korytov Pavel <thexcloud@gmail.com>
 ;; Maintainer: Korytov Pavel <thexcloud@gmail.com>
@@ -1932,6 +1932,20 @@ BODY is put in that lambda."
        (quit-window t))
      ,@body))
 
+(defun org-journal-tags--magit-section-toggle-workaround (section)
+  "`magit-section-toggle' with a workaround for invisible lines.
+
+SECTION is an instance of `magit-section'.
+
+No idea what I'm doing wrong, but this seems to help."
+  (interactive (list (save-excursion
+                       (let ((lines (count-lines (point-min) (point-max))))
+                         (while (and (invisible-p (point))
+                                     (< (line-number-at-pos) lines))
+                           (forward-line 1)))
+                       (magit-current-section))))
+  (magit-section-toggle section))
+
 (defvar org-journal-tags-status-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map magit-section-mode-map)
@@ -1949,7 +1963,7 @@ BODY is put in that lambda."
                                 (quit-window t)))
     (when (fboundp #'evil-define-key*)
       (evil-define-key* '(normal motion) map
-        (kbd "<tab>") #'magit-section-toggle
+        (kbd "<tab>") #'org-journal-tags--magit-section-toggle-workaround
         (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point
         "s" #'org-journal-tags-transient-query
         "n" (org-journal-tags--with-close-status
@@ -1968,7 +1982,7 @@ BODY is put in that lambda."
 (transient-define-prefix org-journal-tags--status-transient-help ()
   "Commands in the status buffer."
   ["Section commands"
-   ("<tab>" "Toggle section" magit-section-toggle)
+   ("<tab>" "Toggle section" org-journal-tags--magit-section-toggle-workaround)
    ("M-1" "Show level 1" magit-section-show-level-1-all)
    ("M-2" "Show level 2" magit-section-show-level-2-all)]
   ["Org Journal"
@@ -2334,7 +2348,7 @@ That can be used to scale multiple barcharts the same way."
                                 (quit-window t)))
     (when (fboundp #'evil-define-key*)
       (evil-define-key* '(normal motion) map
-        (kbd "<tab>") #'magit-section-toggle
+        (kbd "<tab>") #'org-journal-tags--magit-section-toggle-workaround
         (kbd "<RET>") #'org-journal-tags--buffer-visit-thing-at-point
         "r" #'org-journal-tags--query-refresh
         "s" #'org-journal-tags-transient-query
@@ -2348,7 +2362,7 @@ That can be used to scale multiple barcharts the same way."
 (transient-define-prefix org-journal-tags--query-transient-help ()
   "Commands in the query results buffer."
   ["Section commands"
-   ("<tab>" "Toggle section" magit-section-toggle)
+   ("<tab>" "Toggle section" org-journal-tags--magit-section-toggle-workaround)
    ("M-1" "Show level 1" magit-section-show-level-1-all)
    ("M-2" "Show level 2" magit-section-show-level-2-all)]
   ["General commands"
