@@ -1982,6 +1982,20 @@ No idea what I'm doing wrong, but this seems to help."
     map)
   "A keymap for `org-journal-tags-status-mode'.")
 
+(defun org-journal-tags--new-entry ()
+  "Create new org-journal entry.  Close the status buffer if needed."
+  (interactive)
+  (when (eq major-mode 'org-journal-tags-status-mode)
+    (quit-window t))
+  (call-interactively #'org-journal-new-entry))
+
+(defun org-journal-tags--open-current-journal-file ()
+  "Open the current journal file.  Close the status buffer if needed."
+  (interactive)
+  (when (eq major-mode 'org-journal-tags-status-mode)
+    (quit-window t))
+  (org-journal-open-current-journal-file))
+
 (transient-define-prefix org-journal-tags--status-transient-help ()
   "Commands in the status buffer."
   ["Section commands"
@@ -1992,16 +2006,8 @@ No idea what I'm doing wrong, but this seems to help."
    ("s" "New query" org-journal-tags-transient-query)
    ("r" "Rename tag" org-journal-tags-refactor)
    ("u" "Refresh buffer" org-journal-tags-status-refresh)
-   ("n" "New journal entry" (lambda nil
-                              (interactive)
-                              (when (eq major-mode 'org-journal-tags-status-mode)
-                                (quit-window t))
-                              (call-interactively #'org-journal-new-entry)))
-   ("o" "Current journal entry" (lambda ()
-                                  (interactive)
-                                  (when (eq major-mode 'org-journal-tags-status-mode)
-                                    (quit-window t))
-                                  (org-journal-open-current-journal-file)))
+   ("n" "New journal entry"  org-journal-tags--new-entry)
+   ("o" "Current journal entry" org-journal-tags--open-current-journal-file)
    ("q" "Quit" transient-quit-one)])
 
 (define-derived-mode org-journal-tags-status-mode magit-section "Org Journal Tags"
