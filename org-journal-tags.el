@@ -7,6 +7,7 @@
 ;; Version: 0.4.0
 ;; Package-Requires: ((emacs "27.1") (org-journal "2.1.2") (magit-section "3.3.0") (transient "0.3.7"))
 ;; Homepage: https://github.com/SqrtMinusOne/org-journal-tags
+;; Published-At: 2022-02-06
 
 ;; This file is NOT part of GNU Emacs.
 
