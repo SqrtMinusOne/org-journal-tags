@@ -2080,9 +2080,13 @@ No idea what I'm doing wrong, but this seems to help."
 (defun org-journal-tags--on-this-day-get-dates ()
   "Get the list of dates for the \"On this day\" section."
   (cl-loop for (description . params) in org-journal-tags-on-this-day-breakpoints
-           collect (let ((time (org-journal-tags--decoded-time-add
-                                (decode-time)
-                                (apply #'make-decoded-time params))))
+           collect (let ((time (thread-first
+                                 (time-convert nil 'integer)
+                                 (- (* 60 60 org-extend-today-until))
+                                 (seconds-to-time)
+                                 (decode-time)
+                                 (org-journal-tags--decoded-time-add
+                                  (apply #'make-decoded-time params)))))
                      (setf (decoded-time-second time) 0
                            (decoded-time-minute time) 0
                            (decoded-time-hour time) 0)
