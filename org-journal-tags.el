@@ -922,21 +922,24 @@ of (tag-name . `org-journal-tag-reference')"
 
 (defun org-journal-tags--timestamps-extract ()
   "Extract timestamps from the current org-journal buffer."
-  (org-element-map (org-element-parse-buffer) 'timestamp
-    (lambda (elem)
-      (when-let* ((preview-region (org-journal-tags--timestamps-get-preview-region elem))
-                  (paragraph (org-journal-tags--get-element-parent elem 'paragraph))
-                  (region (list (org-element-property :begin paragraph)
-                                (org-element-property :end paragraph)))
-                  (time (time-convert
-                         (org-timestamp-to-time elem)
-                         'integer))
-                  (ref (org-journal-tags--links-extract-one elem region)))
-        (org-journal-timestamp--create
-         :ref ref
-         :datetime time
-         :preview-start (nth 0 preview-region)
-         :preview-end (nth 1 preview-region))))))
+  (seq-filter
+   #'identity
+   (org-element-map (org-element-parse-buffer) 'timestamp
+     (lambda (elem)
+       (when-let* ((preview-region (org-journal-tags--timestamps-get-preview-region elem))
+                   (paragraph (org-journal-tags--get-element-parent elem 'paragraph))
+                   (region (list (org-element-property :begin paragraph)
+                                 (org-element-property :end paragraph)))
+                   (time (time-convert
+                          (org-timestamp-to-time elem)
+                          'integer))
+                   (ref (org-journal-tags--links-extract-one elem region)))
+         (when (eq (org-element-property :type elem) 'active)
+           (org-journal-timestamp--create
+            :ref ref
+            :datetime time
+            :preview-start (nth 0 preview-region)
+            :preview-end (nth 1 preview-region))))))))
 
 (defun org-journal-tags--round-datetime (datetime)
   "Remove time part from DATETIME.
@@ -1052,7 +1055,7 @@ DATE-JOURNAL is a list of (month day year)."
                        (gethash file (alist-get :files org-journal-tags-db))))
                   (or (null date) (> last-updated date)))
            do (with-temp-buffer
-                (message "Syncronizing org-journal-tags database...")
+                (message "Synchronizing org-journal-tags database: %s" file)
                 (insert-file-contents file)
                 (setq-local buffer-file-name file)
                 (let ((org-mode-hook nil) (text-mode-hook nil))
@@ -1715,6 +1718,9 @@ All the keys are optional.
 
 TAG-NAMES is a list of strings with tag names to include.
 EXCLUDE-TAG-NAMES is a list of strings with tag names to exclude.
+
+LOCATION is `section' (search for tags only in the section drawer),
+`inline' (search for tags inline), or `both' (default).
 
 START-DATE and END-DATE are UNIX timestamps that set the search
 boundaries.
