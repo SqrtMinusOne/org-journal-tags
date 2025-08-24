@@ -2621,15 +2621,24 @@ OBJ in an instance of that class."
 (defclass org-journal-tags--transient-date (org-journal-tags--transient-variable)
   ((reader :initform #'org-journal-tags--transient-date-reader)))
 
+(defun org-journal-tags--ts-to-day-start (&optional timestamp)
+  "Move TIMESTAMP to start of day."
+  (let ((time (decode-time timestamp)))
+    (setf (decoded-time-second time) 0
+          (decoded-time-minute time) 0
+          (decoded-time-hour time) 0)
+    (time-convert (encode-time time) #'integer)))
+
 (defun org-journal-tags--transient-date-reader (prompt _initial-input _history)
   "Read the date with `org-read-date'.
 
 PROMPT is a string to prompt with.
 
 Returns a UNIX timestamp."
-  (time-convert
-   (org-read-date nil t nil prompt)
-   'integer))
+  (let ((time (time-convert
+               (org-read-date nil t nil "f")
+               'integer)))
+    (org-journal-tags--ts-to-day-start time)))
 
 (cl-defmethod transient-format-value ((obj org-journal-tags--transient-date))
   "Format value for the `org-journal-tags--transient-date' class.
@@ -2801,10 +2810,13 @@ OBJ is an instance of that class."
 
 VALUES should be an alist of transient values."
   (let ((params (org-journal-tags--alist-to-plist values)))
-    (setq params
-          (if (plist-get params :order)
-              (plist-put params :order 'ascending)
-            (plist-put params :order 'descending)))))
+    (setf (plist-get params :order)
+          (if (plist-get params :order) 'ascending 'descending))
+    (when (plist-get params :end-date)
+      (setf (plist-get params :end-date)
+            (+ (plist-get params :end-date)
+               (- (* 60 60 24) 1))))
+    params))
 
 (defmacro org-journal-tags--render-query-refs (&rest body)
   "Process the query results before rendering them in the buffer.
