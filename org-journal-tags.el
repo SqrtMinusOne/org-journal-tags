@@ -1645,7 +1645,9 @@ properties of REF."
       (substring
        (gethash file-name org-journal-tags--files-cache)
        (1- (or start (org-journal-tag-reference-ref-start ref)))
-       (1- (or end (org-journal-tag-reference-ref-end ref))))))))
+       ;; The end can be greater than max if the file is opened.
+       (1- (min (or end (org-journal-tag-reference-ref-end ref))
+                (length (gethash file-name org-journal-tags--files-cache)))))))))
 
 (defun org-journal-tags--string-match-indices (regex string)
   "Get indices of REGEX matches in STRING."
