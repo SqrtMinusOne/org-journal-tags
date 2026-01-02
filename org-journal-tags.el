@@ -2106,6 +2106,9 @@ No idea what I'm doing wrong, but this seems to help."
   "Use Org Mode to fill STRING to some fixed width."
   (with-temp-buffer
     (insert string)
+    ;; XXX This serves to make the warning from `org-element-at-point'
+    ;; shut up without the overhead of actually invoking `org-mode'
+    (setq-local major-mode 'org-mode)
     (goto-char (point-min))
     (let ((point -1)
           (can-move t))
@@ -2265,7 +2268,9 @@ tag."
       (magit-insert-section (org-journal-tags)
         (insert (propertize "All tags" 'face 'magit-section-heading))
         (magit-insert-heading)
-        (org-journal-tags--buffer-render-tag-buttons))))
+        (org-journal-tags--buffer-render-tag-buttons))
+      (let ((magit-section-cache-visibility nil))
+        (magit-section-show magit-root-section))))
   (goto-char (point-min)))
 
 (defun org-journal-tags-status-refresh ()
@@ -2831,7 +2836,9 @@ available to the BODY, which can process the variable however necessary."
        (org-journal-tags--buffer-render-query
         (progn
           ,@body))
-       (setq-local org-journal-tags--query-params params))
+       (setq-local org-journal-tags--query-params params)
+       (let ((magit-section-cache-visibility nil))
+         (magit-section-show magit-root-section)))
      (unless (string-equal (buffer-name (current-buffer))
                            org-journal-tags-query-buffer-name)
        (switch-to-buffer-other-window org-journal-tags-query-buffer-name))))
